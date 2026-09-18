@@ -1,0 +1,5 @@
+node_modules/
+dist/
+dmgs/
+.DS_Store
+.codegraph

@@ -1,0 +1,32 @@
+{
+  "name": "auto-review",
+  "version": "0.2.0",
+  "private": true,
+  "main": "main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --mac --arm64 && mkdir -p dmgs && cp dist/*.dmg dmgs/"
+  },
+  "devDependencies": {
+    "electron": "^41.7.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.yjq.autoreview",
+    "productName": "ReviewFlow",
+    "files": [
+      "main/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "hardenedRuntime": false
+    },
+    "directories": {
+      "output": "dist"
+    }
+  }
+}

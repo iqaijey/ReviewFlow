@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https: http:">
+  <title>ReviewFlow</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header id="app-header">
+    <div class="header-left">
+      <span class="app-title">ReviewFlow</span>
+      <span id="project-path" class="project-path">未选择项目</span>
+    </div>
+    <div class="header-right">
+      <button id="btn-select-folder" class="btn btn-primary">选择项目文件夹</button>
+      <button id="btn-rescan" class="btn">重新扫描</button>
+    </div>
+  </header>
+  <nav id="tab-bar"></nav>
+  <main id="tab-content"></main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

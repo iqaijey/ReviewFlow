@@ -1,0 +1,30 @@
+# ReviewFlow
+
+一个 macOS 桌面端的 AI 代码评审工具：放入项目文件夹，解析 Git 改动，用 AI 做多角度 Review。
+
+## 功能
+
+- **改动解析**：未提交改动 / 分支对比 / 自定义 ref / 指定若干 commit，自动标记受影响的类与函数
+- **多角度 Review**：改动概述、安全性、结构问题、影响面、逻辑严谨性、臃肿与冗余、可扩展性、可复用性
+- **逐文件分析 / 逐句解析**：单文件三节评审；点击或拖动框选若干改动行，AI 解释含义与意图
+- **四种 AI 接入**：OpenAI 兼容 API（填 Key）、本地 OpenCode / OMO、Kimi CLI、Codex CLI（只读沙箱）
+- **效率功能**：模型下拉拉取、思考强度配置、token 与耗时统计、运行详情预览（命令 + prompt）、评审历史与导出 Markdown、文件监听自动刷新、布局拖拽
+
+## 运行
+
+```bash
+npm install
+npm start                    # 或 npm start -- /path/to/project 直接打开项目
+```
+
+## 打包（macOS arm64）
+
+```bash
+npm run pack   # 产物在 dist/，DMG 会归拢到 dmgs/
+```
+
+无签名（ad-hoc），首次打开如被 Gatekeeper 拦截请右键 → 打开。
+
+## 技术
+
+Electron，无前端框架，主进程 CommonJS + 渲染进程原生 ES Module，零运行时依赖。
