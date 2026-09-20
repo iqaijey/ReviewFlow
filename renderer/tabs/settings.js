@@ -172,6 +172,7 @@ export default {
       codexModel: codexModelRow.getValue(),
       customPrompt: customPromptInput.value.trim(),
       reasoningEffort: effortSelect.value,
+      timeoutMin: Math.max(1, Math.round(Number(timeoutInput.value) || 10)),
     });
 
     const modelRow = makeModelRow(DEFAULTS.model, () => ({
@@ -234,6 +235,17 @@ export default {
     for (const radio of Object.values(radios)) {
       radio.addEventListener('change', syncBackendFields);
     }
+
+    // ---------- 超时时间 ----------
+    const timeoutInput = el('input', {
+      class: 'settings-input', type: 'number', min: '1', max: '120',
+      spellcheck: 'false',
+    });
+    timeoutInput.value = '10';
+    const timeoutField = makeField('超时时间（分钟）', timeoutInput);
+    timeoutField.appendChild(el('div', { class: 'settings-hint' },
+      '慢模型或大批量评审可能需要更久，超时可调大（1~120），对四种接入方式都生效'));
+    form.appendChild(timeoutField);
 
     // ---------- 思考强度 ----------
     const effortSelect = el('select', { class: 'settings-input settings-model-select' });
@@ -463,6 +475,7 @@ export default {
       codexModelRow.setValue(merged.codexModel || '');
       customPromptInput.value = merged.customPrompt || '';
       effortSelect.value = merged.reasoningEffort || '';
+      timeoutInput.value = String(merged.timeoutMin || 10);
     }).catch(() => {
       radios.api.checked = true;
       syncBackendFields();

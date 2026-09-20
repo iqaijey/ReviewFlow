@@ -12,6 +12,7 @@ const DEFAULTS = {
   codexModel: '',
   customPrompt: '',
   reasoningEffort: '',
+  timeoutMin: 10,
   overviewWidth: 0,
 };
 

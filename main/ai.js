@@ -98,6 +98,12 @@ function setChunkSender(fn) {
   chunkSender = typeof fn === 'function' ? fn : null;
 }
 
+// 请求超时（分钟），默认 10，可在设置里调大；慢模型/大批量评审需要更久
+function timeoutMs(cfg) {
+  const min = Number(cfg && cfg.timeoutMin);
+  return (min > 0 ? min : 10) * 60_000;
+}
+
 // 通过本机 CLI（opencode / kimi / codex）完成对话，使用各 CLI 已配置好的模型与登录态。
 // 注意：直接 execFile 这些二进制会挂起（疑似其进程/会话检测），必须经 bash 启动。
 function chatViaCli(backend, cfg, messages, folder) {
@@ -117,6 +123,7 @@ function chatViaCli(backend, cfg, messages, folder) {
     `auto-review-prompt-${process.pid}-${Date.now()}.txt`,
   );
   const cmd = buildCliCmd(backend, cfg, folder, tmpFile);
+  const cliTimeout = timeoutMs(cfg);
   return new Promise((resolve, reject) => {
     fs.writeFile(tmpFile, text, 'utf8', (werr) => {
       if (werr) {
@@ -125,7 +132,7 @@ function chatViaCli(backend, cfg, messages, folder) {
       }
       execFile(
         cmd,
-        { shell: '/bin/bash', maxBuffer: 10 * 1024 * 1024, timeout: 300_000, env: cliEnv() },
+        { shell: '/bin/bash', maxBuffer: 10 * 1024 * 1024, timeout: cliTimeout, env: cliEnv() },
         (err, stdout, stderr) => {
           fs.unlink(tmpFile, () => {});
           const label = CLI_LABELS[backend] || backend;
@@ -134,7 +141,10 @@ function chatViaCli(backend, cfg, messages, folder) {
             if (backend === 'codex' && /login|auth|unauthorized|token/i.test(raw)) {
               reject(new Error('Codex CLI 未登录，请先在终端运行 codex login 完成授权'));
             } else if (err.killed) {
-              reject(new Error(`${label} 执行超时（5 分钟），请检查本地模型配置`));
+              reject(new Error(
+                `${label} 执行超时（当前上限 ${Math.round(cliTimeout / 60000)} 分钟），` +
+                '可在「AI 设置」中调大超时时间',
+              ));
             } else {
               reject(new Error(`${label} 执行失败: ${raw.slice(0, 300)}`));
             }
@@ -260,7 +270,7 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(timeoutMs(cfg)),
   });
   try {
     let resp = await send();
