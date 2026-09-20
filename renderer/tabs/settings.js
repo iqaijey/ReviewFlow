@@ -333,13 +333,122 @@ export default {
       }
     });
 
-    // 版本号
+    // ---------- 版本与更新 ----------
+    const versionField = el('div', { class: 'settings-field update-field' });
+    versionField.appendChild(el('label', { class: 'settings-label' }, '版本与更新'));
+    const versionRow = el('div', { class: 'update-row' });
     const versionEl = el('div', { class: 'settings-version' }, '');
-    container.appendChild(versionEl);
+    const checkBtn = el('button', { class: 'btn', type: 'button' }, '检查更新');
+    versionRow.appendChild(versionEl);
+    versionRow.appendChild(checkBtn);
+    versionField.appendChild(versionRow);
+    const updateStatus = el('div', { class: 'update-status' });
+    versionField.appendChild(updateStatus);
+    container.appendChild(versionField);
+
+    let currentVersionText = '';
     if (typeof api.getVersion === 'function') {
       api.getVersion().then((v) => {
-        versionEl.textContent = `ReviewFlow v${v}`;
+        currentVersionText = `ReviewFlow v${v}`;
+        versionEl.textContent = currentVersionText;
       }).catch(() => {});
+    }
+
+    let offProgress = null;
+    const setProgress = (percent, bar, label) => {
+      bar.style.width = `${percent}%`;
+      label.textContent = `${percent}%`;
+    };
+
+    const showUpdateAvailable = (info, { interactive }) => {
+      updateStatus.textContent = '';
+      updateStatus.appendChild(el('div', { class: 'settings-msg-ok' },
+        `发现新版本 v${info.latestVersion}`));
+      if (info.notes) {
+        const notes = String(info.notes).slice(0, 500);
+        updateStatus.appendChild(el('pre', { class: 'update-notes' }, notes));
+      }
+      if (!info.dmgUrl) {
+        updateStatus.appendChild(el('div', { class: 'settings-msg-err' },
+          '该版本未提供 arm64 安装包'));
+        return;
+      }
+      if (!interactive) return;
+
+      const downloadBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '下载更新');
+      const progressWrap = el('div', { class: 'update-progress' });
+      progressWrap.style.display = 'none';
+      const progressBar = el('div', { class: 'update-progress-bar' });
+      const progressLabel = el('span', { class: 'update-progress-label' }, '');
+      progressWrap.appendChild(progressBar);
+      progressWrap.appendChild(progressLabel);
+      updateStatus.appendChild(downloadBtn);
+      updateStatus.appendChild(progressWrap);
+
+      const startDownload = async () => {
+        downloadBtn.disabled = true;
+        downloadBtn.textContent = '正在下载…';
+        progressWrap.style.display = '';
+        setProgress(0, progressBar, progressLabel);
+        if (offProgress) offProgress();
+        offProgress = api.onUpdateProgress((percent) => {
+          setProgress(percent, progressBar, progressLabel);
+        });
+        try {
+          await api.downloadUpdate(info.dmgUrl);
+          ctx.toast('下载完成，已打开安装包，拖入「应用程序」完成更新');
+          downloadBtn.textContent = '重新打开安装包';
+        } catch (err) {
+          if (offProgress) {
+            offProgress();
+            offProgress = null;
+          }
+          progressWrap.style.display = 'none';
+          updateStatus.appendChild(el('div', { class: 'settings-msg-err' }, errText(err)));
+          downloadBtn.textContent = '重试下载';
+        } finally {
+          downloadBtn.disabled = false;
+        }
+      };
+      downloadBtn.addEventListener('click', startDownload);
+    };
+
+    const runCheck = async ({ silent }) => {
+      try {
+        const info = await api.checkUpdates();
+        if (!info.hasUpdate) {
+          if (!silent) {
+            updateStatus.textContent = '';
+            updateStatus.appendChild(el('div', { class: 'settings-msg-ok' }, '已是最新版本'));
+          }
+          return;
+        }
+        if (silent) {
+          ctx.notify('发现新版本', `ReviewFlow v${info.latestVersion} 可用，前往「AI 设置」更新`);
+        } else {
+          showUpdateAvailable(info, { interactive: true });
+        }
+      } catch (err) {
+        if (!silent) {
+          updateStatus.textContent = '';
+          updateStatus.appendChild(el('div', { class: 'settings-msg-err' }, errText(err)));
+        }
+      }
+    };
+
+    checkBtn.addEventListener('click', async () => {
+      checkBtn.disabled = true;
+      updateStatus.textContent = '';
+      updateStatus.appendChild(el('div', { class: 'settings-msg-ok' }, '正在检查更新…'));
+      try {
+        await runCheck({ silent: false });
+      } finally {
+        checkBtn.disabled = false;
+      }
+    });
+
+    if (typeof api.checkUpdates === 'function') {
+      runCheck({ silent: true });
     }
 
     api.getSettings().then((s) => {

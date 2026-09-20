@@ -7,6 +7,7 @@ const ai = require('./ai');
 const settingsStore = require('./settings');
 const iconManager = require('./iconManager');
 const store = require('./store');
+const updateChecker = require('./updateChecker');
 
 // 支持 `electron . /path/to/project` 直接打开项目
 function getInitialFolder() {
@@ -135,8 +136,11 @@ function registerIpcHandlers() {
     return settingsStore.saveSettings(settings);
   });
 
-  ipcMain.handle('ai:analyzeOverview', async (_event, payload) => {
+  ipcMain.handle('ai:analyzeOverview', async (event, payload) => {
     try {
+      ai.setChunkSender((runId, text) => {
+        if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+      });
       return await ai.analyzeOverview(payload);
     } catch (err) {
       throw new Error(`AI 概述分析失败：${err.message}`);
@@ -151,8 +155,11 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ai:analyzeFile', async (_event, payload) => {
+  ipcMain.handle('ai:analyzeFile', async (event, payload) => {
     try {
+      ai.setChunkSender((runId, text) => {
+        if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+      });
       return await ai.analyzeFile(payload);
     } catch (err) {
       throw new Error(`AI 单文件分析失败：${err.message}`);
@@ -215,6 +222,31 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('ai:getCurrentRun', async () => ai.getCurrentRun());
+
+  ipcMain.handle('update:check', async () => {
+    try {
+      return await updateChecker.checkForUpdates();
+    } catch (err) {
+      throw new Error(err.message && err.message.includes('检查更新失败')
+        ? err.message
+        : `检查更新失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('update:download', async (event, dmgUrl) => {
+    const { shell } = require('electron');
+    try {
+      const filePath = await updateChecker.downloadUpdate(dmgUrl, (percent) => {
+        if (!event.sender.isDestroyed()) event.sender.send('update:progress', percent);
+      });
+      shell.openPath(filePath);
+      return filePath;
+    } catch (err) {
+      throw new Error(err.message && err.message.includes('下载失败')
+        ? err.message
+        : `下载失败：${err.message}`);
+    }
+  });
 }
 
 app.whenReady().then(() => {

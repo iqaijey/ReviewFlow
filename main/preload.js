@@ -26,6 +26,18 @@ contextBridge.exposeInMainWorld('autoReview', {
   addRecentProject: (folder) => ipcRenderer.invoke('recent:add', folder),
   startWatch: (folder) => ipcRenderer.invoke('watch:start', folder),
   stopWatch: () => ipcRenderer.invoke('watch:stop'),
+  checkUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: (dmgUrl) => ipcRenderer.invoke('update:download', dmgUrl),
+  onUpdateProgress: (callback) => {
+    const listener = (_event, percent) => callback(percent);
+    ipcRenderer.on('update:progress', listener);
+    return () => ipcRenderer.removeListener('update:progress', listener);
+  },
+  onAiChunk: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('ai:chunk', listener);
+    return () => ipcRenderer.removeListener('ai:chunk', listener);
+  },
   onFsChanged: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('fs:changed', listener);

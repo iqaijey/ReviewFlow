@@ -179,10 +179,21 @@ export default {
       startBtn.disabled = true;
       mdBox.textContent = '';
       setStatus(loadingNode());
+      // API 后端流式输出：增量文本先以纯文本预览，结束后替换为渲染好的 markdown
+      const runId = `run-${Date.now()}`;
+      const streamBox = el('div', { class: 'stream-preview', style: 'white-space: pre-wrap' });
+      const unsubscribe = typeof api.onAiChunk === 'function'
+        ? api.onAiChunk(({ runId: chunkRunId, text }) => {
+            if (chunkRunId !== runId) return;
+            if (!streamBox.parentNode) mdBox.appendChild(streamBox);
+            streamBox.textContent = text;
+          })
+        : null;
       try {
         const { markdown, stats } = await api.analyzeOverview({
           folder: state.folder,
           files: state.changes.files,
+          runId,
         });
         setStatus(null);
         mdBox.innerHTML = renderMarkdown(markdown);
@@ -199,6 +210,8 @@ export default {
         showError(errText(err));
         notify('AI 分析失败', errText(err));
       } finally {
+        if (unsubscribe) unsubscribe();
+        streamBox.remove();
         running = false;
         startBtn.disabled = false;
       }
@@ -235,9 +248,18 @@ export default {
           analyzeBtn.disabled = true;
           resultBox.textContent = '';
           resultBox.appendChild(loadingNode());
+          const runId = `run-${Date.now()}`;
+          const streamBox = el('div', { class: 'stream-preview', style: 'white-space: pre-wrap' });
+          const unsubscribe = typeof api.onAiChunk === 'function'
+            ? api.onAiChunk(({ runId: chunkRunId, text }) => {
+                if (chunkRunId !== runId) return;
+                if (!streamBox.parentNode) resultBox.appendChild(streamBox);
+                streamBox.textContent = text;
+              })
+            : null;
           try {
             const { markdown, stats } = await api.analyzeFile({
-              folder: state.folder, file,
+              folder: state.folder, file, runId,
             });
             resultBox.textContent = '';
             const mdNode = el('div', { class: 'md' });
@@ -253,6 +275,8 @@ export default {
             box.appendChild(retry);
             resultBox.appendChild(box);
           } finally {
+            if (unsubscribe) unsubscribe();
+            streamBox.remove();
             fileRunning = false;
             analyzeBtn.disabled = false;
           }

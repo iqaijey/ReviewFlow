@@ -92,6 +92,12 @@ function getCurrentRun() {
   return currentRun;
 }
 
+// 流式输出的推送方：main.js 注册，fn(runId, 累计文本) 转发给渲染进程
+let chunkSender = null;
+function setChunkSender(fn) {
+  chunkSender = typeof fn === 'function' ? fn : null;
+}
+
 // 通过本机 CLI（opencode / kimi / codex）完成对话，使用各 CLI 已配置好的模型与登录态。
 // 注意：直接 execFile 这些二进制会挂起（疑似其进程/会话检测），必须经 bash 启动。
 function chatViaCli(backend, cfg, messages, folder) {
@@ -146,7 +152,45 @@ function chatViaCli(backend, cfg, messages, folder) {
   });
 }
 
-async function chatWithStats(settings, messages, { maxTokens = 1024, temperature = 0.2, folder = null, kind = 'AI 调用', batch = '' } = {}) {
+// 解析 OpenAI 兼容的 SSE 流式响应：逐行读取 data: 事件，累加 delta.content，
+// 每收到一段就把累计全文推给渲染进程；usage 取流末尾带 usage 的 chunk（stream_options.include_usage）
+async function readSseStream(resp, runId) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let usage = {};
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let chunk;
+      try {
+        chunk = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      if (chunk && chunk.usage && typeof chunk.usage === 'object') usage = chunk.usage;
+      const delta = chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
+      const piece = delta && typeof delta.content === 'string' ? delta.content : '';
+      if (piece) {
+        content += piece;
+        if (chunkSender && runId) chunkSender(runId, content);
+      }
+    }
+  }
+  if (!content) throw new Error('AI 返回格式异常，无法解析响应内容');
+  return { content, usage };
+}
+
+async function chatWithStats(settings, messages, { maxTokens = 1024, temperature = 0.2, folder = null, kind = 'AI 调用', batch = '', runId = null, stream = false } = {}) {
   const cfg = settings || (await getSettings());
   const startedAt = Date.now();
   const promptText = messages.map((m) => m.content).join('\n\n');
@@ -202,6 +246,11 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
     max_tokens: maxTokens,
   };
   if (appliedEffort) body.reasoning_effort = appliedEffort;
+  // 仅 API 分支支持流式；CLI 分支忽略该选项
+  if (stream) {
+    body.stream = true;
+    body.stream_options = { include_usage: true };
+  }
   currentRun = {
     kind, batch, backend: 'api', model: cfg.model, effort: appliedEffort,
     command: `POST ${url}`,
@@ -233,6 +282,20 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
       if (!resp.ok) {
         throw new Error(`AI 请求失败 (${resp.status}): ${detail || resp.statusText}`);
       }
+    }
+    if (stream) {
+      const { content, usage } = await readSseStream(resp, runId);
+      return {
+        content,
+        stats: {
+          backend: 'api',
+          model: cfg.model,
+          effort: appliedEffort,
+          promptTokens: typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : null,
+          completionTokens: typeof usage.completion_tokens === 'number' ? usage.completion_tokens : null,
+          durationMs: Date.now() - startedAt,
+        },
+      };
     }
     const data = await resp.json();
     const content = data && data.choices && data.choices[0] && data.choices[0].message
@@ -388,13 +451,61 @@ function fileToDiffText(file) {
   return `文件: ${file.path} (${status})\n${hunks}`;
 }
 
+const CONTEXT_BLOCK_MAX_LINES = 200;
+const CONTEXT_MAX_CHARS = 4000;
+
+// 读取被改动的类/函数在当前文件中的完整定义，作为评审上下文（diff 只含改动片段）。
+// 文件被删除、不存在或读取失败时返回空串。
+function buildContext(folder, file) {
+  if (!folder || !file || !file.path || file.status === 'deleted') return '';
+  const targets = (Array.isArray(file.classes) ? file.classes : [])
+    .filter((c) => c && c.changed && c.startLine > 0 && c.endLine >= c.startLine);
+  if (!targets.length) return '';
+  let lines;
+  try {
+    lines = fs.readFileSync(path.join(folder, file.path), 'utf8').split('\n');
+  } catch {
+    return '';
+  }
+  const blocks = [];
+  for (const c of targets) {
+    const end = Math.min(c.endLine, lines.length);
+    const start = Math.min(c.startLine, end);
+    let slice = lines.slice(start - 1, end);
+    let note = '';
+    if (slice.length > CONTEXT_BLOCK_MAX_LINES) {
+      slice = slice.slice(0, CONTEXT_BLOCK_MAX_LINES);
+      note = '\n（定义过长已截断）';
+    }
+    blocks.push(
+      `### ${c.name}（${file.path}:${c.startLine}-${c.endLine}）\n` +
+      `\`\`\`\n${slice.join('\n')}${note}\n\`\`\`\n`,
+    );
+  }
+  let out = blocks.join('\n');
+  if (out.length > CONTEXT_MAX_CHARS) {
+    out = `${out.slice(0, CONTEXT_MAX_CHARS)}\n（上下文过长已截断）`;
+  }
+  return out;
+}
+
+// diff 文本 + 被改动类/函数的完整定义上下文（整体分析分批与逐文件评审共用）
+function fileToPromptText(folder, file) {
+  let text = fileToDiffText(file);
+  const context = buildContext(folder, file);
+  if (context) {
+    text += `\n\n以下是被改动的类/函数的完整定义（供分析上下文）：\n\n${context}`;
+  }
+  return text;
+}
+
 const OVERVIEW_SYSTEM =
   '你是一位资深代码评审专家，请用中文、markdown 格式输出，严格使用以下二级标题分节：' +
   '## 改动概述 / ## 安全性 / ## 结构问题 / ## 影响面 / ## 逻辑严谨性 / ## 臃肿与冗余 / ## 可扩展性 / ## 可复用性 / ## 总结与建议。' +
   '每节给出具体、可执行的发现，无问题的小节明确说『未发现问题』，引用具体文件和行号。';
 
-// 按累计长度分批：每批 ≤10000 字符，文件不拆半，单文件超限则单独成批并截断；最多 6 批
-function splitIntoBatches(files) {
+// 按累计长度分批：每批 ≤10000 字符（含上下文），文件不拆半，单文件超限则单独成批并截断；最多 6 批
+function splitIntoBatches(folder, files) {
   const BATCH_LIMIT = 10000;
   const MAX_BATCHES = 6;
   const batches = [];
@@ -402,7 +513,7 @@ function splitIntoBatches(files) {
   let currentLen = 0;
   let reviewed = 0;
   for (const file of files) {
-    const text = fileToDiffText(file);
+    const text = fileToPromptText(folder, file);
     if (text.length > BATCH_LIMIT) {
       if (current.length) {
         batches.push(current);
@@ -428,12 +539,12 @@ function splitIntoBatches(files) {
   return { batches, reviewed };
 }
 
-async function analyzeOverview({ folder, files }) {
+async function analyzeOverview({ folder, files, runId = null }) {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可分析的改动');
   }
   const cfg = await getSettings();
-  const { batches, reviewed } = splitIntoBatches(files);
+  const { batches, reviewed } = splitIntoBatches(folder, files);
   const system = withCustomPrompt(OVERVIEW_SYSTEM, cfg);
   const statsList = [];
   const batchResults = [];
@@ -443,7 +554,7 @@ async function analyzeOverview({ folder, files }) {
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: system },
       { role: 'user', content: user },
-    ], { maxTokens: 4096, folder, kind: '整体分析', batch: label });
+    ], { maxTokens: 4096, folder, kind: '整体分析', batch: label, runId, stream: true });
     batchResults.push(content);
     statsList.push(stats);
   }
@@ -465,7 +576,7 @@ async function analyzeOverview({ folder, files }) {
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: synthSystem },
       { role: 'user', content: combined },
-    ], { maxTokens: 4096, folder, kind: '整体分析', batch: '（综合结果）' });
+    ], { maxTokens: 4096, folder, kind: '整体分析', batch: '（综合结果）', runId, stream: true });
     markdown = content;
     statsList.push(stats);
   }
@@ -475,10 +586,10 @@ async function analyzeOverview({ folder, files }) {
   return { markdown, stats: aggregateStats(statsList) };
 }
 
-async function analyzeFile({ folder, file }) {
+async function analyzeFile({ folder, file, runId = null }) {
   if (!file || !file.path) throw new Error('缺少要分析的文件');
   const cfg = await getSettings();
-  let text = fileToDiffText(file);
+  let text = fileToPromptText(folder, file);
   if (text.length > 12000) text = `${text.slice(0, 12000)}\n(diff 过长已截断)`;
   const system = withCustomPrompt(
     '你是一位资深代码评审专家，请用中文、markdown 格式输出，严格使用以下二级标题分节：' +
@@ -490,11 +601,11 @@ async function analyzeFile({ folder, file }) {
   const { content, stats } = await chatWithStats(cfg, [
     { role: 'system', content: system },
     { role: 'user', content: user },
-  ], { maxTokens: 2048, folder, kind: '逐文件分析', batch: file.path });
+  ], { maxTokens: 2048, folder, kind: '逐文件分析', batch: file.path, runId, stream: true });
   return { markdown: content, stats };
 }
 
-async function explainChange({ folder, filePath, hunk, line, segments }) {
+async function explainChange({ folder, filePath, hunk, line, segments, runId = null }) {
   // 框选多行：segments = [{ hunk, lines: [line...] }]，整体解释这组改动
   if (Array.isArray(segments) && segments.length) {
     const blocks = segments.map((seg) => {
@@ -517,7 +628,7 @@ async function explainChange({ folder, filePath, hunk, line, segments }) {
     const { content, stats } = await chatWithStats(null, [
       { role: 'system', content: system },
       { role: 'user', content: user },
-    ], { maxTokens: 768, folder, kind: '逐句解析', batch: filePath });
+    ], { maxTokens: 768, folder, kind: '逐句解析', batch: filePath, runId, stream: true });
     return { markdown: content, stats };
   }
   if (!hunk || !line) throw new Error('缺少要解释的改动行');
@@ -538,7 +649,7 @@ async function explainChange({ folder, filePath, hunk, line, segments }) {
   const { content, stats } = await chatWithStats(null, [
     { role: 'system', content: system },
     { role: 'user', content: user },
-  ], { maxTokens: 512, folder, kind: '逐句解析', batch: filePath });
+  ], { maxTokens: 512, folder, kind: '逐句解析', batch: filePath, runId, stream: true });
   return { markdown: content, stats };
 }
 
@@ -551,4 +662,4 @@ async function testConnection(settings) {
   }
 }
 
-module.exports = { analyzeOverview, analyzeFile, explainChange, testConnection, listModels, getCurrentRun };
+module.exports = { analyzeOverview, analyzeFile, explainChange, testConnection, listModels, getCurrentRun, setChunkSender };

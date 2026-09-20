@@ -1200,3 +1200,55 @@ body {
   color: var(--text-dim);
   font-size: 11px;
 }
+
+/* ---------- 版本与更新 ---------- */
+.update-field { margin-top: 24px; }
+.update-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.update-row .settings-version { margin-top: 0; }
+.update-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.update-notes {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.update-progress {
+  position: relative;
+  width: 240px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.update-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), #6fe3c6);
+  transition: width 0.3s ease;
+}
+.update-progress-label {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: var(--text-dim);
+}
