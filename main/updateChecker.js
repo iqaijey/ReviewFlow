@@ -3,6 +3,8 @@ const path = require('path');
 const { app } = require('electron');
 
 const RELEASE_API = 'https://api.github.com/repos/iqaijey/ReviewFlow/releases/latest';
+// 直链不走 api.github.com，不受未登录 60 次/小时的限流影响
+const LATEST_YML_URL = 'https://github.com/iqaijey/ReviewFlow/releases/latest/download/latest-mac.yml';
 
 // 三段数字 semver 比较：a > b 返回正数，a < b 返回负数，相等返回 0
 function compareVersions(a, b) {
@@ -17,14 +19,39 @@ function compareVersions(a, b) {
   return 0;
 }
 
+// 从 latest-mac.yml 提取版本号和 dmg 文件名（简易文本解析，避免引入 yaml 依赖）
+function parseLatestYml(text) {
+  const versionMatch = text.match(/^version:\s*(\S+)/m);
+  const dmgMatch = text.match(/url:\s*(\S+-arm64\.dmg)/);
+  return {
+    version: versionMatch ? versionMatch[1] : '',
+    dmgFile: dmgMatch ? dmgMatch[1] : '',
+  };
+}
+
+async function fetchNotes() {
+  // 更新说明走 API（best-effort，限流时降级为空）
+  try {
+    const response = await fetch(RELEASE_API, {
+      headers: { 'User-Agent': 'ReviewFlow', Accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) return { notes: '', releaseUrl: '' };
+    const release = await response.json();
+    return {
+      notes: release.name || release.body || '',
+      releaseUrl: release.html_url || '',
+    };
+  } catch {
+    return { notes: '', releaseUrl: '' };
+  }
+}
+
 async function checkForUpdates() {
   let response;
   try {
-    response = await fetch(RELEASE_API, {
-      headers: {
-        'User-Agent': 'ReviewFlow',
-        Accept: 'application/vnd.github+json',
-      },
+    response = await fetch(LATEST_YML_URL, {
+      headers: { 'User-Agent': 'ReviewFlow' },
       signal: AbortSignal.timeout(30000),
     });
   } catch (err) {
@@ -33,32 +60,30 @@ async function checkForUpdates() {
   if (!response.ok) {
     throw new Error(`检查更新失败：GitHub 返回 ${response.status}`);
   }
+  const text = await response.text();
+  const { version: latestVersion, dmgFile } = parseLatestYml(text);
+  if (!latestVersion) throw new Error('检查更新失败：无法解析最新版本信息');
 
-  let release;
-  try {
-    release = await response.json();
-  } catch {
-    throw new Error('检查更新失败：无法解析 GitHub 响应');
-  }
-  if (release.draft || release.prerelease) {
-    throw new Error('检查更新失败：最新发布为草稿或预发布版本');
-  }
-
-  const tagName = release.tag_name || '';
-  const latestVersion = tagName.replace(/^v/, '');
   const currentVersion = app.getVersion();
   const hasUpdate = compareVersions(latestVersion, currentVersion) > 0;
 
-  const assets = Array.isArray(release.assets) ? release.assets : [];
-  const dmgAsset = assets.find((a) => typeof a.name === 'string' && a.name.endsWith('-arm64.dmg'));
+  let notes = '';
+  let releaseUrl = 'https://github.com/iqaijey/ReviewFlow/releases/latest';
+  if (hasUpdate) {
+    const extra = await fetchNotes();
+    notes = extra.notes;
+    if (extra.releaseUrl) releaseUrl = extra.releaseUrl;
+  }
 
   return {
     hasUpdate,
     latestVersion,
     currentVersion,
-    notes: release.name || release.body || '',
-    dmgUrl: dmgAsset ? dmgAsset.browser_download_url : null,
-    releaseUrl: release.html_url || '',
+    notes,
+    dmgUrl: dmgFile
+      ? `https://github.com/iqaijey/ReviewFlow/releases/latest/download/${dmgFile}`
+      : null,
+    releaseUrl,
   };
 }
 
