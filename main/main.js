@@ -166,6 +166,17 @@ function registerIpcHandlers() {
     }
   });
 
+  ipcMain.handle('ai:explainFull', async (event, payload) => {
+    try {
+      ai.setChunkSender((runId, text) => {
+        if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+      });
+      return await ai.explainFull(payload);
+    } catch (err) {
+      throw new Error(`AI 完整讲解失败：${err.message}`);
+    }
+  });
+
   ipcMain.handle('review:save', async (_event, payload) => {
     try {
       return store.saveReview(payload);
@@ -222,6 +233,8 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('ai:getCurrentRun', async () => ai.getCurrentRun());
+
+  ipcMain.handle('ai:cancel', async () => ai.cancelRun());
 
   ipcMain.handle('update:check', async () => {
     try {

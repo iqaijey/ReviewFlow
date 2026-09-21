@@ -162,6 +162,10 @@ export default {
         notify('逐句解析完成', label);
       }).catch((err) => {
         if (seq !== requestSeq) return;
+        if (errText(err).includes('已被用户终止')) {
+          setStatus(el('div', { class: 'empty-hint' }, '已终止'));
+          return;
+        }
         setStatus(el('div', { class: 'error-text' },
           `解析失败：${errText(err)}`));
         notify('逐句解析失败', errText(err));

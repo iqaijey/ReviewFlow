@@ -32,7 +32,16 @@ export function createRunDetails(ctx) {
     overlay = el('div', { class: 'modal-overlay' });
     const panel = el('div', { class: 'run-modal' });
     const titleBar = el('div', { class: 'commit-modal-title' }, '运行详情');
+    const cancelBtn = el('button', { class: 'btn run-cancel', type: 'button' }, '终止运行');
+    cancelBtn.addEventListener('click', async () => {
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = '正在终止…';
+      try {
+        await api.cancelRun();
+      } catch { /* 终止失败也要让弹窗继续轮询到结束态 */ }
+    });
     const closeBtn = el('button', { class: 'btn run-close', type: 'button' }, '关闭');
+    titleBar.appendChild(cancelBtn);
     titleBar.appendChild(closeBtn);
 
     const kindEl = el('span', {});
@@ -78,12 +87,15 @@ export function createRunDetails(ctx) {
         cmdEl.textContent = '';
         promptTitle.textContent = '';
         promptEl.textContent = '';
+        cancelBtn.style.display = 'none';
         if (timer) {
           clearInterval(timer);
           timer = null;
         }
         return;
       }
+      cancelBtn.style.display = '';
+      if (!cancelBtn.disabled) cancelBtn.textContent = '终止运行';
       kindEl.textContent = run.batch ? `${run.kind} ${run.batch}` : run.kind;
       backendEl.textContent = BACKEND_LABELS[run.backend] || run.backend;
       modelEl.textContent = run.model || '-';

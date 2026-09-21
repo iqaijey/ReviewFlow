@@ -207,8 +207,12 @@ export default {
           });
         } catch { /* 忽略 */ }
       } catch (err) {
-        showError(errText(err));
-        notify('AI 分析失败', errText(err));
+        if (errText(err).includes('已被用户终止')) {
+          setStatus(el('div', { class: 'empty-hint' }, '已终止，可点击「开始 AI 分析」重新开始'));
+        } else {
+          showError(errText(err));
+          notify('AI 分析失败', errText(err));
+        }
       } finally {
         if (unsubscribe) unsubscribe();
         streamBox.remove();

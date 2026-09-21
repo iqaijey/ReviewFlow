@@ -1276,3 +1276,10 @@ body {
   background: rgba(78, 201, 176, 0.18);
   border-color: var(--accent);
 }
+
+.run-cancel {
+  border-color: rgba(248, 81, 73, 0.5);
+  color: #f85149;
+  margin-left: auto;
+}
+.run-cancel:hover:not(:disabled) { background: rgba(248, 81, 73, 0.12); }

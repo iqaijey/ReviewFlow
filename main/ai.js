@@ -104,6 +104,31 @@ function timeoutMs(cfg) {
   return (min > 0 ? min : 10) * 60_000;
 }
 
+// 终止当前运行：API 中断 fetch，CLI 杀进程组
+let currentCancel = null;
+function cancelRun() {
+  if (currentCancel) {
+    currentCancel();
+    currentCancel = null;
+    return true;
+  }
+  return false;
+}
+
+function cancelledError() {
+  const err = new Error('已被用户终止');
+  err.cancelled = true;
+  return err;
+}
+
+function killProcessGroup(child) {
+  try {
+    process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    try { child.kill('SIGTERM'); } catch { /* 已退出 */ }
+  }
+}
+
 // 通过本机 CLI（opencode / kimi / codex）完成对话，使用各 CLI 已配置好的模型与登录态。
 // 注意：直接 execFile 这些二进制会挂起（疑似其进程/会话检测），必须经 bash 启动。
 function chatViaCli(backend, cfg, messages, folder) {
@@ -130,17 +155,25 @@ function chatViaCli(backend, cfg, messages, folder) {
         reject(new Error(`无法写入临时 prompt 文件: ${werr.message}`));
         return;
       }
-      execFile(
+      let timedOut = false;
+      // detached 让子进程自成进程组，取消/超时时整组杀掉（含 bash 孙进程里的 CLI）
+      const child = execFile(
         cmd,
-        { shell: '/bin/bash', maxBuffer: 10 * 1024 * 1024, timeout: cliTimeout, env: cliEnv() },
+        { shell: '/bin/bash', maxBuffer: 10 * 1024 * 1024, env: cliEnv(), detached: true },
         (err, stdout, stderr) => {
+          clearTimeout(timer);
           fs.unlink(tmpFile, () => {});
           const label = CLI_LABELS[backend] || backend;
           if (err) {
-            const raw = String(stderr || err.message || '');
+            if (cancelledByUser) {
+              reject(cancelledError());
+              return;
+            }
+            const raw = String(stderr || err.message || '')
+              .replace(/\x1b\[[0-9;]*m/g, '');
             if (backend === 'codex' && /login|auth|unauthorized|token/i.test(raw)) {
               reject(new Error('Codex CLI 未登录，请先在终端运行 codex login 完成授权'));
-            } else if (err.killed) {
+            } else if (timedOut || err.killed) {
               reject(new Error(
                 `${label} 执行超时（当前上限 ${Math.round(cliTimeout / 60000)} 分钟），` +
                 '可在「AI 设置」中调大超时时间',
@@ -158,6 +191,15 @@ function chatViaCli(backend, cfg, messages, folder) {
           resolve(content);
         },
       );
+      let cancelledByUser = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        killProcessGroup(child);
+      }, cliTimeout);
+      currentCancel = () => {
+        cancelledByUser = true;
+        killProcessGroup(child);
+      };
     });
   });
 }
@@ -240,6 +282,7 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
       };
     } finally {
       currentRun = null;
+      currentCancel = null;
     }
   }
   if (!cfg.apiKey) throw new Error('请先在「AI 设置」中配置 API Key');
@@ -266,11 +309,13 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
     command: `POST ${url}`,
     promptChars: promptText.length, promptText, startedAt,
   };
+  const controller = new AbortController();
+  currentCancel = () => controller.abort();
   const send = () => fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs(cfg)),
+    signal: AbortSignal.any([AbortSignal.timeout(timeoutMs(cfg)), controller.signal]),
   });
   try {
     let resp = await send();
@@ -324,8 +369,12 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
         durationMs: Date.now() - startedAt,
       },
     };
+  } catch (err) {
+    if (controller.signal.aborted) throw cancelledError();
+    throw err;
   } finally {
     currentRun = null;
+    currentCancel = null;
   }
 }
 
@@ -615,6 +664,39 @@ async function analyzeFile({ folder, file, runId = null }) {
   return { markdown: content, stats };
 }
 
+const FULL_EXPLAIN_SYSTEM =
+  '你是一位资深工程师，正在给同事完整讲解一批代码改动。请用中文、markdown 格式输出。' +
+  '按文件逐个讲解：每个文件用三级标题（### 文件路径），其下逐改动块详细解释：' +
+  '改了什么、从上下文推断的改动意图、改动前后的行为差异、与周边代码的关系、阅读时需要注意的细节。' +
+  '尽可能详细、讲透，可以引用代码片段，不要遗漏任何一处改动，不要做笼统概括。';
+
+// 完整讲解：分批逐文件讲透，各批结果直接拼接（每批内容互不重叠，无需综合）
+async function explainFull({ folder, files, runId = null }) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error('没有可讲解的改动');
+  }
+  const cfg = await getSettings();
+  const { batches, reviewed } = splitIntoBatches(folder, files);
+  const system = withCustomPrompt(FULL_EXPLAIN_SYSTEM, cfg);
+  const statsList = [];
+  const parts = [];
+  for (let i = 0; i < batches.length; i += 1) {
+    const label = batches.length > 1 ? `（第 ${i + 1}/${batches.length} 批）` : '';
+    const user = `以下是部分代码改动${label}（unified diff），请完整详细讲解：\n\n${batches[i].join('\n\n')}`;
+    const { content, stats } = await chatWithStats(cfg, [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ], { maxTokens: 8192, folder, kind: '完整讲解', batch: label, runId, stream: true });
+    parts.push(content);
+    statsList.push(stats);
+  }
+  let markdown = parts.join('\n\n---\n\n');
+  if (reviewed < files.length) {
+    markdown += `\n\n改动过多，仅讲解了前 ${reviewed} 个文件。`;
+  }
+  return { markdown, stats: aggregateStats(statsList) };
+}
+
 async function explainChange({ folder, filePath, hunk, line, segments, runId = null }) {
   // 框选多行：segments = [{ hunk, lines: [line...] }]，整体解释这组改动
   if (Array.isArray(segments) && segments.length) {
@@ -672,4 +754,4 @@ async function testConnection(settings) {
   }
 }
 
-module.exports = { analyzeOverview, analyzeFile, explainChange, testConnection, listModels, getCurrentRun, setChunkSender };
+module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, testConnection, listModels, getCurrentRun, setChunkSender, cancelRun };
