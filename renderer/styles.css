@@ -1252,3 +1252,27 @@ body {
   font-size: 11px;
   color: var(--text-dim);
 }
+
+/* ---------- 类选择 chip ---------- */
+.file-changed-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+.class-chip {
+  padding: 1px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  font-family: var(--mono);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.class-chip:hover { background: rgba(78, 201, 176, 0.10); border-color: rgba(78, 201, 176, 0.35); }
+.class-chip.active {
+  background: rgba(78, 201, 176, 0.18);
+  border-color: var(--accent);
+}

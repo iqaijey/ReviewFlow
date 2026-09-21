@@ -91,10 +91,57 @@ export default {
       diffView.appendChild(hint);
     };
 
-    const changedNames = (file) =>
-      file.classes.filter((c) => c.changed).map((c) =>
-        c.kind === 'class' ? `class ${c.name}` : `${c.name}()`
-      );
+    // ---------- 按类选择（逐句解析用） ----------
+    const classSel = new Map(); // key: `${file.path}#${name}#${startLine}` → { file, cls }
+    const classKey = (file, c) => `${file.path}#${c.name}#${c.startLine}`;
+
+    const classLabel = (c) => (c.kind === 'class' ? `class ${c.name}` : `${c.name}()`);
+
+    // 类范围内的改动行（add/del），newLine 优先、del 行退回 oldLine 近似判断
+    const classChangedLines = (file, c) => {
+      const inRange = (n) => n != null && n >= c.startLine && n <= c.endLine;
+      const segs = [];
+      for (const hunk of file.hunks) {
+        const lines = hunk.lines.filter((l) =>
+          (l.type === 'add' || l.type === 'del') &&
+          (inRange(l.newLine) || inRange(l.oldLine)));
+        if (lines.length) segs.push({ hunk, lines });
+      }
+      return segs;
+    };
+
+    const dispatchClassSelection = () => {
+      if (!classSel.size) return;
+      const segments = [];
+      for (const { file, cls } of classSel.values()) {
+        for (const seg of classChangedLines(file, cls)) {
+          segments.push({
+            file,
+            classInfo: cls,
+            hunk: {
+              header: `${classLabel(cls)} · ${file.path}:${cls.startLine}-${cls.endLine}`,
+              lines: seg.hunk.lines,
+            },
+            lines: seg.lines,
+          });
+        }
+      }
+      if (!segments.length) return;
+      state.selectedLine = { classSelection: true, segments };
+      bus.dispatchEvent(new CustomEvent('line:select', { detail: state.selectedLine }));
+    };
+
+    const toggleClass = (file, c, chip) => {
+      const key = classKey(file, c);
+      if (classSel.has(key)) {
+        classSel.delete(key);
+        chip.classList.remove('active');
+      } else {
+        classSel.set(key, { file, cls: c });
+        chip.classList.add('active');
+      }
+      dispatchClassSelection();
+    };
 
     const updateReadStat = () => {
       if (readStatEl) readStatEl.textContent = `已读 ${readSet.size}`;
@@ -119,7 +166,7 @@ export default {
       readStatEl = el('span', { class: 'stat-item stat-read' }, `已读 ${readSet.size}`);
       statsBar.appendChild(readStatEl);
       statsBar.appendChild(el('span', { class: 'stat-item stat-hint' },
-        '点击改动行 AI 解析 · 拖动或 ⌥+点击框选多行'));
+        '点击改动行 AI 解析 · 拖动或 ⌥+点击框选多行 · 点击类名按类解析'));
     };
 
     // ---------- 基准选择 ----------
@@ -327,9 +374,22 @@ export default {
         const dir = slash >= 0 ? file.path.slice(0, slash + 1) : '';
         info.appendChild(el('div', { class: 'file-name', title: file.path }, name));
         if (dir) info.appendChild(el('div', { class: 'file-dir', title: file.path }, dir));
-        const names = changedNames(file);
-        if (names.length)
-          info.appendChild(el('div', { class: 'file-changed-names' }, names.join(' · ')));
+        const changedClasses = file.classes.filter((c) => c.changed);
+        if (changedClasses.length) {
+          const chips = el('div', { class: 'file-changed-names' });
+          for (const c of changedClasses) {
+            const chip = el('button', {
+              class: 'class-chip', type: 'button', title: '点击按类解析（可多选）',
+            }, classLabel(c));
+            if (classSel.has(classKey(file, c))) chip.classList.add('active');
+            chip.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              toggleClass(file, c, chip);
+            });
+            chips.appendChild(chip);
+          }
+          info.appendChild(chips);
+        }
         item.appendChild(info);
         const readBtn = el('button', { class: 'read-btn', type: 'button' },
           isRead ? '取消已读' : '已读');
@@ -468,6 +528,7 @@ export default {
       if (state.folder !== knownFolder) {
         knownFolder = state.folder;
         readSet.clear();
+        classSel.clear();
         collapsed = new Set();
         refreshBranches();
       }

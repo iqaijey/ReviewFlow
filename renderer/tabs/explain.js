@@ -53,19 +53,24 @@ export default {
     // 统一成行号标注
     const lineNo = (l) => (l.newLine != null ? l.newLine : l.oldLine);
 
-    // detail 归一化为 segments：单行 → 单段单行；框选 → 多段多行
+    // detail 归一化为 segments：单行 → 单段单行；框选/按类 → 多段多行
     const toSegments = (detail) => {
       if (Array.isArray(detail.segments) && detail.segments.length) return detail.segments;
       const hunk = detail.file.hunks[detail.hunkIndex];
       if (!hunk) return null;
-      return [{ hunkIndex: detail.hunkIndex, hunk, lines: [detail.line] }];
+      return [{ file: detail.file, hunkIndex: detail.hunkIndex, hunk, lines: [detail.line] }];
     };
 
-    const renderContext = (file, segments) => {
+    const renderContext = (segments) => {
       contextBox.textContent = '';
       const card = el('div', { class: 'explain-card' });
-      card.appendChild(el('div', { class: 'explain-card-file' }, file.path));
+      let lastFile = null;
       for (const seg of segments) {
+        const filePath = seg.file ? seg.file.path : '';
+        if (filePath && filePath !== lastFile) {
+          card.appendChild(el('div', { class: 'explain-card-file' }, filePath));
+          lastFile = filePath;
+        }
         card.appendChild(el('div', { class: 'explain-card-hunk' }, seg.hunk.header));
         const selectedSet = new Set(seg.lines);
         const lines = el('div', { class: 'explain-card-lines' });
@@ -85,7 +90,13 @@ export default {
       contextBox.appendChild(card);
     };
 
-    const rangeLabel = (file, segments) => {
+    const rangeLabel = (segments) => {
+      // 按类选择：显示类名
+      if (segments[0] && segments[0].classInfo) {
+        const names = [...new Set(segments.map((s) => s.classInfo.name))];
+        return names.length === 1 ? `类 ${names[0]}` : `${names[0]} 等 ${names.length} 个类`;
+      }
+      const file = segments[0].file;
       const first = lineNo(segments[0].lines[0]);
       const lastSeg = segments[segments.length - 1];
       const last = lineNo(lastSeg.lines[lastSeg.lines.length - 1]);
@@ -112,13 +123,12 @@ export default {
     let requestSeq = 0;
 
     const handleSelect = (detail) => {
-      const { file } = detail;
       const segments = toSegments(detail);
       if (!segments) return;
       const seq = ++requestSeq;
-      const label = rangeLabel(file, segments);
+      const label = rangeLabel(segments);
 
-      renderContext(file, segments);
+      renderContext(segments);
       resultBox.textContent = '';
       const loading = el('div', { class: 'explain-loading' });
       loading.appendChild(el('span', { class: 'spinner' }));
@@ -129,10 +139,16 @@ export default {
       }, '运行详情'));
       setStatus(loading);
 
-      const payload = { folder: state.folder, filePath: file.path };
+      const payload = { folder: state.folder };
       if (detail.segments) {
-        payload.segments = segments.map((s) => ({ hunk: s.hunk, lines: s.lines }));
+        payload.filePath = segments[0].file ? segments[0].file.path : '';
+        payload.segments = segments.map((s) => ({
+          hunk: s.hunk,
+          lines: s.lines,
+          filePath: s.file ? s.file.path : undefined,
+        }));
       } else {
+        payload.filePath = segments[0].file.path;
         payload.hunk = segments[0].hunk;
         payload.line = segments[0].lines[0];
       }

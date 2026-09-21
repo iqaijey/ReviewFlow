@@ -628,12 +628,12 @@ async function explainChange({ folder, filePath, hunk, line, segments, runId = n
           return `${marker}${prefix}${no} ${l.content}`;
         })
         .join('\n');
-      return `代码块: ${seg.hunk.header}\n${body}`;
+      const fileLabel = seg.filePath || filePath;
+      return `文件: ${fileLabel}\n代码块: ${seg.hunk.header}\n${body}`;
     }).join('\n\n');
     const system = '你是代码讲解专家，用简洁中文解释一组代码改动的整体含义、意图和潜在影响，3~5 句话，不要复述代码。';
     const user =
-      `文件: ${filePath}\n\n` +
-      `以下是从 diff 中框选的多条改动（+ 新增 / - 删除，数字为行号，> 标出被询问的行）：\n${blocks}\n\n` +
+      `以下是从 diff 中框选的多条改动（+ 新增 / - 删除，数字为行号，> 标出被询问的行，可能来自多个文件）：\n${blocks}\n\n` +
       `请把这些以 > 标出的改动作为一个整体来解释。`;
     const { content, stats } = await chatWithStats(null, [
       { role: 'system', content: system },
