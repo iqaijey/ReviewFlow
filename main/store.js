@@ -23,7 +23,7 @@ function writeJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
 
-function saveReview({ folder, title, stats, markdown }) {
+function saveReview({ folder, title, stats, markdown, kind }) {
   if (!folder || typeof folder !== 'string') throw new Error('保存评审失败：缺少项目路径');
   const file = storeFile('review-history.json');
   const all = readJson(file, {});
@@ -32,6 +32,7 @@ function saveReview({ folder, title, stats, markdown }) {
     id: Date.now().toString(36),
     title: title || '未命名评审',
     createdAt: Date.now(),
+    kind: kind || 'review',
     stats: stats || null,
     markdown: markdown || '',
   };

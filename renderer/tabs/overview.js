@@ -8,7 +8,7 @@ export default {
   title: '改动总览',
 
   mount(container, ctx) {
-    const { el, bus, state, api, errText } = ctx;
+    const { el, bus, state, api, errText, toast } = ctx;
 
     const statsBar = el('div', { class: 'overview-stats' });
 
@@ -442,10 +442,20 @@ export default {
         const table = el('div', { class: 'diff-lines' });
         hunk.lines.forEach((line, lineIndex) => {
           const row = el('div', { class: `diff-line line-${line.type}` });
-          row.appendChild(el('span', { class: 'line-no' },
-            line.oldLine == null ? '' : String(line.oldLine)));
-          row.appendChild(el('span', { class: 'line-no' },
-            line.newLine == null ? '' : String(line.newLine)));
+          // 点击行号复制该行内容，不触发行选中
+          const lineNoCell = (text) => {
+            const cell = el('span', { class: 'line-no line-no-copy' }, text);
+            cell.addEventListener('mousedown', (ev) => ev.stopPropagation());
+            cell.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              navigator.clipboard.writeText(line.content)
+                .then(() => { if (toast) toast('已复制该行'); })
+                .catch(() => { /* 剪贴板不可用时静默 */ });
+            });
+            return cell;
+          };
+          row.appendChild(lineNoCell(line.oldLine == null ? '' : String(line.oldLine)));
+          row.appendChild(lineNoCell(line.newLine == null ? '' : String(line.newLine)));
           row.appendChild(el('span', { class: 'line-content' }, line.content));
           if (line.type === 'add' || line.type === 'del') {
             row.classList.add('line-clickable');

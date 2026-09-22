@@ -255,7 +255,7 @@ for (const tab of tabs) {
   tabBar.append(btn);
 }
 
-// 快捷键：⌘1~4 切 tab，⌘R 重新扫描
+// 快捷键：⌘1~5 切 tab，⌘R 重新扫描
 document.addEventListener('keydown', (ev) => {
   if (!ev.metaKey || ev.shiftKey || ev.altKey || ev.ctrlKey) return;
   if (ev.key >= '1' && ev.key <= String(tabs.length)) {
@@ -265,6 +265,57 @@ document.addEventListener('keydown', (ev) => {
     ev.preventDefault();
     rescan();
   }
+});
+
+// 快捷键说明弹窗：按 ? 打开，点遮罩 / Esc 关闭
+let shortcutOverlay = null;
+function closeShortcuts() {
+  if (shortcutOverlay) {
+    shortcutOverlay.remove();
+    shortcutOverlay = null;
+  }
+}
+function showShortcuts() {
+  if (shortcutOverlay) {
+    closeShortcuts();
+    return;
+  }
+  shortcutOverlay = el('div', { class: 'modal-overlay' });
+  const panel = el('div', { class: 'commit-modal' });
+  panel.appendChild(el('div', { class: 'commit-modal-title' }, '快捷键说明'));
+  const list = el('div', { class: 'shortcut-list' });
+  for (const [key, desc] of [
+    [`⌘1 ~ ⌘${tabs.length}`, '切换 Tab'],
+    ['⌘R', '重新扫描改动'],
+    ['点击改动行', 'AI 逐句解析'],
+    ['拖动 / ⌥+点击', '框选多行解析'],
+    ['点击类名', '按类解析'],
+    ['点击行号', '复制该行内容'],
+    ['?', '打开本说明'],
+  ]) {
+    const rowEl = el('div', { class: 'shortcut-row' });
+    rowEl.appendChild(el('span', { class: 'shortcut-key' }, key));
+    rowEl.appendChild(el('span', {}, desc));
+    list.appendChild(rowEl);
+  }
+  panel.appendChild(list);
+  shortcutOverlay.appendChild(panel);
+  shortcutOverlay.addEventListener('click', (ev) => {
+    if (ev.target === shortcutOverlay) closeShortcuts();
+  });
+  document.body.appendChild(shortcutOverlay);
+}
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && shortcutOverlay) {
+    closeShortcuts();
+    return;
+  }
+  if (ev.key !== '?' || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const t = ev.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+      t.tagName === 'SELECT' || t.isContentEditable)) return;
+  ev.preventDefault();
+  showShortcuts();
 });
 
 selectBtn.addEventListener('click', selectFolder);

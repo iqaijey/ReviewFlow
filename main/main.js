@@ -236,6 +236,27 @@ function registerIpcHandlers() {
 
   ipcMain.handle('ai:cancel', async () => ai.cancelRun());
 
+  ipcMain.handle('ai:pause', async () => ai.pauseRun());
+
+  ipcMain.handle('ai:resume', async () => {
+    try {
+      return await ai.resumeRun();
+    } catch (err) {
+      throw new Error(`继续运行失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('ai:explainFollowUp', async (event, payload) => {
+    try {
+      ai.setChunkSender((runId, text) => {
+        if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+      });
+      return await ai.explainFollowUp(payload);
+    } catch (err) {
+      throw new Error(`AI 追问失败：${err.message}`);
+    }
+  });
+
   ipcMain.handle('update:check', async () => {
     try {
       return await updateChecker.checkForUpdates();

@@ -120,17 +120,36 @@ export default {
     // ---------- 整体分析 ----------
     const toolbar = el('div', { class: 'review-toolbar' });
     const chips = el('div', { class: 'review-chips' });
-    for (const dim of DIMENSIONS) {
-      const chip = el('button', { class: 'review-chip', type: 'button' }, dim);
-      chip.addEventListener('click', () => {
-        const target = findSection(dim);
-        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      });
-      chips.appendChild(chip);
-    }
+    // 固定 8 维度 + 设置里的自定义维度（每行一个）
+    const parseCustomDimensions = (raw) =>
+      String(raw || '').split('\n').map((t) => t.trim()).filter(Boolean);
+    const rebuildChips = (custom) => {
+      chips.textContent = '';
+      for (const dim of DIMENSIONS.concat(custom)) {
+        const chip = el('button', { class: 'review-chip', type: 'button' }, dim);
+        chip.addEventListener('click', () => {
+          const target = findSection(dim);
+          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        chips.appendChild(chip);
+      }
+    };
+    const loadDimensions = () => {
+      api.getSettings()
+        .then((s) => rebuildChips(parseCustomDimensions(s && s.customDimensions)))
+        .catch(() => {});
+    };
+    rebuildChips([]);
+    loadDimensions();
+    bus.addEventListener('settings:saved', loadDimensions);
     const startBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '开始 AI 分析');
+    const runLink = el('button', {
+      class: 'run-link', type: 'button', title: '查看当前运行 / 暂停与继续',
+      onClick: () => ctx.showRunDetails(),
+    }, '运行详情');
     toolbar.appendChild(chips);
     toolbar.appendChild(startBtn);
+    toolbar.appendChild(runLink);
     overallPanel.appendChild(toolbar);
 
     const statusBox = el('div', { class: 'review-status' });

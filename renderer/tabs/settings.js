@@ -9,6 +9,7 @@ const DEFAULTS = {
   kimiModel: '',
   codexModel: '',
   customPrompt: '',
+  customDimensions: '',
   reasoningEffort: '',
 };
 
@@ -17,7 +18,7 @@ export default {
   title: 'AI 设置',
 
   mount(container, ctx) {
-    const { el, api, errText } = ctx;
+    const { el, api, errText, bus } = ctx;
 
     const form = el('div', { class: 'settings-form' });
 
@@ -171,6 +172,7 @@ export default {
       kimiModel: kimiModelRow.getValue(),
       codexModel: codexModelRow.getValue(),
       customPrompt: customPromptInput.value.trim(),
+      customDimensions: customDimensionsInput.value.trim(),
       reasoningEffort: effortSelect.value,
       timeoutMin: Math.max(1, Math.round(Number(timeoutInput.value) || 10)),
     });
@@ -263,6 +265,17 @@ export default {
     effortField.appendChild(el('div', { class: 'settings-hint' },
       'API 映射为 reasoning_effort，OpenCode 为 --variant，Codex 为 model_reasoning_effort；Kimi CLI 读取其 config.toml；统计以实际生效值为准'));
     form.appendChild(effortField);
+
+    // ---------- 自定义检查维度 ----------
+    const customDimensionsInput = el('textarea', {
+      class: 'settings-input settings-textarea', rows: '3',
+      placeholder: '例如：\n性能\n日志规范\n错误处理',
+      spellcheck: 'false',
+    });
+    const customDimensionsField = makeField('自定义检查维度（可选，每行一个）', customDimensionsInput);
+    customDimensionsField.appendChild(el('div', { class: 'settings-hint' },
+      '会在多角度 Review 中追加为新的评审小节'));
+    form.appendChild(customDimensionsField);
 
     // ---------- 自定义评审要求 ----------
     const customPromptInput = el('textarea', {
@@ -474,6 +487,7 @@ export default {
       kimiModelRow.setValue(merged.kimiModel || '');
       codexModelRow.setValue(merged.codexModel || '');
       customPromptInput.value = merged.customPrompt || '';
+      customDimensionsInput.value = merged.customDimensions || '';
       effortSelect.value = merged.reasoningEffort || '';
       timeoutInput.value = String(merged.timeoutMin || 10);
     }).catch(() => {
@@ -488,6 +502,7 @@ export default {
       try {
         await api.saveSettings(currentSettings());
         showMessage('已保存', true);
+        bus.dispatchEvent(new CustomEvent('settings:saved'));
       } catch (err) {
         showMessage(`保存失败：${errText(err)}`, false);
       } finally {

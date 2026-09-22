@@ -121,11 +121,83 @@ export default {
     };
 
     let requestSeq = 0;
+    let previousQA = []; // 本次选择的追问历史，随新选择重置
+
+    // 追问区：输入框 + 提问按钮，回答以 markdown 追加，最多保留最近 10 轮
+    const buildFollowUp = (basePayload) => {
+      if (typeof api.explainFollowUp !== 'function') return null;
+      const seqAtBuild = requestSeq;
+      const box = el('div', { class: 'explain-follow' });
+      const list = el('div', { class: 'explain-follow-list' });
+      const form = el('div', { class: 'explain-follow-form' });
+      const input = el('input', {
+        class: 'settings-input', type: 'text',
+        placeholder: '就这次改动继续提问…', spellcheck: 'false',
+      });
+      const askBtn = el('button', { class: 'btn', type: 'button' }, '提问');
+      form.appendChild(input);
+      form.appendChild(askBtn);
+      box.appendChild(list);
+      box.appendChild(form);
+
+      let asking = false;
+      const submit = async () => {
+        const question = input.value.trim();
+        if (!question || asking) return;
+        asking = true;
+        input.disabled = true;
+        askBtn.disabled = true;
+        const item = el('div', { class: 'explain-follow-item' });
+        item.appendChild(el('div', { class: 'explain-follow-q' }, `> ${question}`));
+        const loading = el('div', { class: 'explain-loading' });
+        loading.appendChild(el('span', { class: 'spinner' }));
+        loading.appendChild(el('span', {}, 'AI 思考中，请稍候…'));
+        item.appendChild(loading);
+        list.appendChild(item);
+        const runId = `run-${Date.now()}`;
+        try {
+          const { markdown, stats } = await api.explainFollowUp({
+            ...basePayload,
+            previousQA: [...previousQA],
+            question,
+            runId,
+          });
+          if (seqAtBuild !== requestSeq) return; // 已选择新内容，丢弃过期回答
+          loading.remove();
+          const mdNode = el('div', { class: 'md' });
+          mdNode.innerHTML = renderMarkdown(markdown);
+          item.appendChild(mdNode);
+          item.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
+          previousQA.push({ question, answer: markdown });
+          if (previousQA.length > 10) previousQA = previousQA.slice(-10);
+          input.value = '';
+        } catch (err) {
+          if (seqAtBuild !== requestSeq) return;
+          loading.remove();
+          if (errText(err).includes('已被用户终止')) {
+            item.appendChild(el('div', { class: 'empty-hint' }, '已终止'));
+          } else {
+            item.appendChild(el('div', { class: 'error-text' },
+              `追问失败：${errText(err)}`));
+          }
+        } finally {
+          asking = false;
+          input.disabled = false;
+          askBtn.disabled = false;
+        }
+      };
+      askBtn.addEventListener('click', submit);
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') submit();
+      });
+      return box;
+    };
 
     const handleSelect = (detail) => {
       const segments = toSegments(detail);
       if (!segments) return;
       const seq = ++requestSeq;
+      previousQA = [];
       const label = rangeLabel(segments);
 
       renderContext(segments);
@@ -158,6 +230,8 @@ export default {
         setStatus(null);
         resultBox.innerHTML = renderMarkdown(markdown);
         resultBox.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
+        const followUp = buildFollowUp(payload);
+        if (followUp) resultBox.appendChild(followUp);
         addHistory(label, markdown);
         notify('逐句解析完成', label);
       }).catch((err) => {

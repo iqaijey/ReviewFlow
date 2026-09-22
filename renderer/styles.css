@@ -1283,3 +1283,60 @@ body {
   margin-left: auto;
 }
 .run-cancel:hover:not(:disabled) { background: rgba(248, 81, 73, 0.12); }
+
+.run-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.run-actions .run-cancel { margin-left: 0; }
+.run-pause, .run-resume {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.run-pause:hover:not(:disabled),
+.run-resume:hover:not(:disabled) { background: rgba(78, 201, 176, 0.12); }
+.run-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+.run-progress-text {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+/* ---------- diff 行号复制 ---------- */
+.diff-line .line-no-copy { cursor: copy; }
+.diff-line .line-no-copy:hover { color: var(--accent); }
+
+/* ---------- 逐句解析追问 ---------- */
+.explain-follow {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.explain-follow-item { margin-bottom: 12px; }
+.explain-follow-q {
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.explain-follow-form { display: flex; gap: 8px; }
+.explain-follow-form .settings-input { flex: 1; }
+
+/* ---------- 快捷键说明弹窗 ---------- */
+.shortcut-list {
+  padding: 12px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.shortcut-row { display: flex; gap: 12px; font-size: 13px; }
+.shortcut-key {
+  width: 150px;
+  flex-shrink: 0;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+}

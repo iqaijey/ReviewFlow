@@ -88,8 +88,47 @@ function cliCmdLabel(backend, cfg, folder) {
 
 // 当前正在进行的 AI 调用（供渲染进程「运行详情」轮询预览）
 let currentRun = null;
+
+// 暂停/继续：分批循环每批开始前检查 pauseRequested，暂停时把续跑状态存进 pausedState
+let pauseRequested = false;
+let pausedState = null;
+let batchRunActive = false;
+
 function getCurrentRun() {
-  return currentRun;
+  if (currentRun) return currentRun;
+  if (pausedState) {
+    return {
+      paused: true,
+      kind: pausedState.kind,
+      batch: `已暂停，第 ${pausedState.nextIndex}/${pausedState.batches.length} 批`,
+      batchIndex: pausedState.nextIndex,
+      batchTotal: pausedState.batches.length,
+      startedAt: pausedState.pausedAt,
+    };
+  }
+  return null;
+}
+
+function pauseRun() {
+  pauseRequested = true;
+  return batchRunActive;
+}
+
+// 从 pausedState 的 nextIndex 继续原分批循环；无暂停状态返回 null
+async function resumeRun() {
+  const state = pausedState;
+  if (!state) return null;
+  pausedState = null;
+  const cfg = await getSettings();
+  batchRunActive = true;
+  try {
+    if (state.kind === 'full') {
+      return await runFullBatches(cfg, state);
+    }
+    return await runOverviewBatches(cfg, state);
+  } finally {
+    batchRunActive = false;
+  }
 }
 
 // 流式输出的推送方：main.js 注册，fn(runId, 累计文本) 转发给渲染进程
@@ -104,9 +143,11 @@ function timeoutMs(cfg) {
   return (min > 0 ? min : 10) * 60_000;
 }
 
-// 终止当前运行：API 中断 fetch，CLI 杀进程组
+// 终止当前运行：API 中断 fetch，CLI 杀进程组；同时清掉暂停状态
 let currentCancel = null;
 function cancelRun() {
+  pausedState = null;
+  pauseRequested = false;
   if (currentCancel) {
     currentCancel();
     currentCancel = null;
@@ -242,7 +283,7 @@ async function readSseStream(resp, runId) {
   return { content, usage };
 }
 
-async function chatWithStats(settings, messages, { maxTokens = 1024, temperature = 0.2, folder = null, kind = 'AI 调用', batch = '', runId = null, stream = false } = {}) {
+async function chatWithStats(settings, messages, { maxTokens = 1024, temperature = 0.2, folder = null, kind = 'AI 调用', batch = '', batchIndex = null, batchTotal = null, runId = null, stream = false } = {}) {
   const cfg = settings || (await getSettings());
   const startedAt = Date.now();
   const promptText = messages.map((m) => m.content).join('\n\n');
@@ -263,7 +304,7 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
       effort = cfg.reasoningEffort || codexCfg.effort || '';
     }
     currentRun = {
-      kind, batch, backend: cfg.backend, model, effort,
+      kind, batch, batchIndex, batchTotal, backend: cfg.backend, model, effort,
       command: cliCmdLabel(cfg.backend, cfg, folder),
       promptChars: promptText.length, promptText, startedAt,
     };
@@ -305,7 +346,7 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
     body.stream_options = { include_usage: true };
   }
   currentRun = {
-    kind, batch, backend: 'api', model: cfg.model, effort: appliedEffort,
+    kind, batch, batchIndex, batchTotal, backend: 'api', model: cfg.model, effort: appliedEffort,
     command: `POST ${url}`,
     promptChars: promptText.length, promptText, startedAt,
   };
@@ -558,10 +599,23 @@ function fileToPromptText(folder, file) {
   return text;
 }
 
-const OVERVIEW_SYSTEM =
-  '你是一位资深代码评审专家，请用中文、markdown 格式输出，严格使用以下二级标题分节：' +
-  '## 改动概述 / ## 安全性 / ## 结构问题 / ## 影响面 / ## 逻辑严谨性 / ## 臃肿与冗余 / ## 可扩展性 / ## 可复用性 / ## 总结与建议。' +
-  '每节给出具体、可执行的发现，无问题的小节明确说『未发现问题』，引用具体文件和行号。';
+// 固定 9 个评审维度 + 可选自定义维度（customDimensions 每行一个，最多 8 个，插在「可复用性」与「总结与建议」之间）
+function overviewSectionsText(cfg) {
+  const dims = (cfg && typeof cfg.customDimensions === 'string' ? cfg.customDimensions : '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const extra = dims.length ? ` / ${dims.map((d) => `## ${d}`).join(' / ')}` : '';
+  return '严格使用以下二级标题分节：' +
+    '## 改动概述 / ## 安全性 / ## 结构问题 / ## 影响面 / ## 逻辑严谨性 / ## 臃肿与冗余 / ## 可扩展性 / ## 可复用性' +
+    `${extra} / ## 总结与建议。` +
+    '每节给出具体、可执行的发现，无问题的小节明确说『未发现问题』，引用具体文件和行号。';
+}
+
+function buildOverviewSystem(cfg) {
+  return `你是一位资深代码评审专家，请用中文、markdown 格式输出，${overviewSectionsText(cfg)}`;
+}
 
 // 按累计长度分批：每批 ≤10000 字符（含上下文），文件不拆半，单文件超限则单独成批并截断；最多 6 批
 function splitIntoBatches(folder, files) {
@@ -598,51 +652,83 @@ function splitIntoBatches(folder, files) {
   return { batches, reviewed };
 }
 
+// 整体分析分批循环：每批开始前检查暂停请求，暂停时保存续跑状态并返回已完成部分；
+// 正常跑完后多批结果再综合（续跑走到这里同样执行综合）
+async function runOverviewBatches(cfg, state) {
+  const { folder, batches, system, runId } = state;
+  for (let i = state.nextIndex; i < batches.length; i += 1) {
+    if (pauseRequested) {
+      pauseRequested = false;
+      state.nextIndex = i;
+      state.pausedAt = Date.now();
+      pausedState = state;
+      return {
+        markdown: `${state.batchResults.join('\n\n')}\n\n（已暂停，可在「运行详情」中继续）`,
+        stats: aggregateStats(state.statsList),
+        paused: true,
+      };
+    }
+    const label = batches.length > 1 ? `（第 ${i + 1}/${batches.length} 批）` : '';
+    const user = `以下是本次未提交的代码改动${label}（unified diff），请进行多角度评审：\n\n${batches[i].join('\n\n')}`;
+    const { content, stats } = await chatWithStats(cfg, [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ], { maxTokens: 4096, folder, kind: '整体分析', batch: label, batchIndex: i + 1, batchTotal: batches.length, runId, stream: true });
+    state.batchResults.push(content);
+    state.statsList.push(stats);
+    state.nextIndex = i + 1;
+  }
+  let markdown;
+  if (state.batchResults.length === 1) {
+    markdown = state.batchResults[0];
+  } else {
+    let combined = state.batchResults
+      .map((r, i) => `【第 ${i + 1} 批评审结果】\n${r}`)
+      .join('\n\n');
+    if (combined.length > 12000) combined = `${combined.slice(0, 12000)}\n(内容过长已截断)`;
+    const synthSystem = withCustomPrompt(
+      '你是一位资深代码评审专家。以下是针对同一批代码改动分批评审得到的多份评审结果，' +
+      `请将它们去重、合并为一份完整评审，仍${overviewSectionsText(cfg)}`,
+      cfg,
+    );
+    const { content, stats } = await chatWithStats(cfg, [
+      { role: 'system', content: synthSystem },
+      { role: 'user', content: combined },
+    ], { maxTokens: 4096, folder, kind: '整体分析', batch: '（综合结果）', batchIndex: batches.length, batchTotal: batches.length, runId, stream: true });
+    markdown = content;
+    state.statsList.push(stats);
+  }
+  if (state.reviewed < state.files.length) {
+    markdown += `\n\n改动过多，仅评审了前 ${state.reviewed} 个文件。`;
+  }
+  return { markdown, stats: aggregateStats(state.statsList), paused: false };
+}
+
 async function analyzeOverview({ folder, files, runId = null }) {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可分析的改动');
   }
   const cfg = await getSettings();
   const { batches, reviewed } = splitIntoBatches(folder, files);
-  const system = withCustomPrompt(OVERVIEW_SYSTEM, cfg);
-  const statsList = [];
-  const batchResults = [];
-  for (let i = 0; i < batches.length; i += 1) {
-    const label = batches.length > 1 ? `（第 ${i + 1}/${batches.length} 批）` : '';
-    const user = `以下是本次未提交的代码改动${label}（unified diff），请进行多角度评审：\n\n${batches[i].join('\n\n')}`;
-    const { content, stats } = await chatWithStats(cfg, [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ], { maxTokens: 4096, folder, kind: '整体分析', batch: label, runId, stream: true });
-    batchResults.push(content);
-    statsList.push(stats);
+  const state = {
+    kind: 'overview',
+    folder,
+    files,
+    system: withCustomPrompt(buildOverviewSystem(cfg), cfg),
+    batchResults: [],
+    statsList: [],
+    nextIndex: 0,
+    batches,
+    reviewed,
+    runId,
+    pausedAt: null,
+  };
+  batchRunActive = true;
+  try {
+    return await runOverviewBatches(cfg, state);
+  } finally {
+    batchRunActive = false;
   }
-  let markdown;
-  if (batchResults.length === 1) {
-    markdown = batchResults[0];
-  } else {
-    let combined = batchResults
-      .map((r, i) => `【第 ${i + 1} 批评审结果】\n${r}`)
-      .join('\n\n');
-    if (combined.length > 12000) combined = `${combined.slice(0, 12000)}\n(内容过长已截断)`;
-    const synthSystem = withCustomPrompt(
-      '你是一位资深代码评审专家。以下是针对同一批代码改动分批评审得到的多份评审结果，' +
-      '请将它们去重、合并为一份完整评审，仍严格使用以下二级标题分节：' +
-      '## 改动概述 / ## 安全性 / ## 结构问题 / ## 影响面 / ## 逻辑严谨性 / ## 臃肿与冗余 / ## 可扩展性 / ## 可复用性 / ## 总结与建议。' +
-      '每节给出具体、可执行的发现，无问题的小节明确说『未发现问题』，引用具体文件和行号。',
-      cfg,
-    );
-    const { content, stats } = await chatWithStats(cfg, [
-      { role: 'system', content: synthSystem },
-      { role: 'user', content: combined },
-    ], { maxTokens: 4096, folder, kind: '整体分析', batch: '（综合结果）', runId, stream: true });
-    markdown = content;
-    statsList.push(stats);
-  }
-  if (reviewed < files.length) {
-    markdown += `\n\n改动过多，仅评审了前 ${reviewed} 个文件。`;
-  }
-  return { markdown, stats: aggregateStats(statsList) };
 }
 
 async function analyzeFile({ folder, file, runId = null }) {
@@ -670,35 +756,69 @@ const FULL_EXPLAIN_SYSTEM =
   '改了什么、从上下文推断的改动意图、改动前后的行为差异、与周边代码的关系、阅读时需要注意的细节。' +
   '尽可能详细、讲透，可以引用代码片段，不要遗漏任何一处改动，不要做笼统概括。';
 
-// 完整讲解：分批逐文件讲透，各批结果直接拼接（每批内容互不重叠，无需综合）
+// 完整讲解分批循环：各批结果直接拼接（每批内容互不重叠，无需综合）；支持暂停/续跑
+async function runFullBatches(cfg, state) {
+  const { folder, batches, system, runId } = state;
+  for (let i = state.nextIndex; i < batches.length; i += 1) {
+    if (pauseRequested) {
+      pauseRequested = false;
+      state.nextIndex = i;
+      state.pausedAt = Date.now();
+      pausedState = state;
+      return {
+        markdown: `${state.parts.join('\n\n---\n\n')}\n\n（已暂停，可在「运行详情」中继续）`,
+        stats: aggregateStats(state.statsList),
+        paused: true,
+      };
+    }
+    const label = batches.length > 1 ? `（第 ${i + 1}/${batches.length} 批）` : '';
+    const user = `以下是部分代码改动${label}（unified diff），请完整详细讲解：\n\n${batches[i].join('\n\n')}`;
+    const { content, stats } = await chatWithStats(cfg, [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ], { maxTokens: 8192, folder, kind: '完整讲解', batch: label, batchIndex: i + 1, batchTotal: batches.length, runId, stream: true });
+    state.parts.push(content);
+    state.statsList.push(stats);
+    state.nextIndex = i + 1;
+  }
+  let markdown = state.parts.join('\n\n---\n\n');
+  if (state.reviewed < state.files.length) {
+    markdown += `\n\n改动过多，仅讲解了前 ${state.reviewed} 个文件。`;
+  }
+  return { markdown, stats: aggregateStats(state.statsList), paused: false };
+}
+
+// 完整讲解：分批逐文件讲透
 async function explainFull({ folder, files, runId = null }) {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可讲解的改动');
   }
   const cfg = await getSettings();
   const { batches, reviewed } = splitIntoBatches(folder, files);
-  const system = withCustomPrompt(FULL_EXPLAIN_SYSTEM, cfg);
-  const statsList = [];
-  const parts = [];
-  for (let i = 0; i < batches.length; i += 1) {
-    const label = batches.length > 1 ? `（第 ${i + 1}/${batches.length} 批）` : '';
-    const user = `以下是部分代码改动${label}（unified diff），请完整详细讲解：\n\n${batches[i].join('\n\n')}`;
-    const { content, stats } = await chatWithStats(cfg, [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ], { maxTokens: 8192, folder, kind: '完整讲解', batch: label, runId, stream: true });
-    parts.push(content);
-    statsList.push(stats);
+  const state = {
+    kind: 'full',
+    folder,
+    files,
+    system: withCustomPrompt(FULL_EXPLAIN_SYSTEM, cfg),
+    parts: [],
+    statsList: [],
+    nextIndex: 0,
+    batches,
+    reviewed,
+    runId,
+    pausedAt: null,
+  };
+  batchRunActive = true;
+  try {
+    return await runFullBatches(cfg, state);
+  } finally {
+    batchRunActive = false;
   }
-  let markdown = parts.join('\n\n---\n\n');
-  if (reviewed < files.length) {
-    markdown += `\n\n改动过多，仅讲解了前 ${reviewed} 个文件。`;
-  }
-  return { markdown, stats: aggregateStats(statsList) };
 }
 
-async function explainChange({ folder, filePath, hunk, line, segments, runId = null }) {
-  // 框选多行：segments = [{ hunk, lines: [line...] }]，整体解释这组改动
+// 构造逐句解析的改动上下文：多段框选（含各段文件路径）或单行 hunk 块，
+// explainChange 与 explainFollowUp 共用
+function buildExplainContext({ filePath, hunk, line, segments }) {
   if (Array.isArray(segments) && segments.length) {
     const blocks = segments.map((seg) => {
       const selected = new Set(seg.lines);
@@ -713,15 +833,10 @@ async function explainChange({ folder, filePath, hunk, line, segments, runId = n
       const fileLabel = seg.filePath || filePath;
       return `文件: ${fileLabel}\n代码块: ${seg.hunk.header}\n${body}`;
     }).join('\n\n');
-    const system = '你是代码讲解专家，用简洁中文解释一组代码改动的整体含义、意图和潜在影响，3~5 句话，不要复述代码。';
-    const user =
-      `以下是从 diff 中框选的多条改动（+ 新增 / - 删除，数字为行号，> 标出被询问的行，可能来自多个文件）：\n${blocks}\n\n` +
-      `请把这些以 > 标出的改动作为一个整体来解释。`;
-    const { content, stats } = await chatWithStats(null, [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ], { maxTokens: 768, folder, kind: '逐句解析', batch: filePath, runId, stream: true });
-    return { markdown: content, stats };
+    return {
+      multi: true,
+      context: `以下是从 diff 中框选的多条改动（+ 新增 / - 删除，数字为行号，> 标出被询问的行，可能来自多个文件）：\n${blocks}`,
+    };
   }
   if (!hunk || !line) throw new Error('缺少要解释的改动行');
   const hunkLines = (hunk.lines || [])
@@ -732,16 +847,54 @@ async function explainChange({ folder, filePath, hunk, line, segments, runId = n
       return `${marker}${prefix}${no} ${l.content}`;
     })
     .join('\n');
+  return {
+    multi: false,
+    context:
+      `文件: ${filePath}\n` +
+      `代码块: ${hunk.header}\n\n` +
+      `该代码块的全部改动（+ 新增 / - 删除，数字为行号，> 标出的是被询问的那一行）：\n${hunkLines}`,
+  };
+}
+
+async function explainChange({ folder, filePath, hunk, line, segments, runId = null }) {
+  const ctx = buildExplainContext({ filePath, hunk, line, segments });
+  // 框选多行：整体解释这组改动
+  if (ctx.multi) {
+    const system = '你是代码讲解专家，用简洁中文解释一组代码改动的整体含义、意图和潜在影响，3~5 句话，不要复述代码。';
+    const user = `${ctx.context}\n\n请把这些以 > 标出的改动作为一个整体来解释。`;
+    const { content, stats } = await chatWithStats(null, [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ], { maxTokens: 768, folder, kind: '逐句解析', batch: filePath, runId, stream: true });
+    return { markdown: content, stats };
+  }
   const system = '你是代码讲解专家，用简洁中文解释单行代码改动的含义、意图和潜在影响，2~4 句话，不要复述代码。';
-  const user =
-    `文件: ${filePath}\n` +
-    `代码块: ${hunk.header}\n\n` +
-    `该代码块的全部改动（+ 新增 / - 删除，数字为行号，> 标出的是被询问的那一行）：\n${hunkLines}\n\n` +
-    `请解释以 > 标出的那一行改动。`;
+  const user = `${ctx.context}\n\n请解释以 > 标出的那一行改动。`;
   const { content, stats } = await chatWithStats(null, [
     { role: 'system', content: system },
     { role: 'user', content: user },
   ], { maxTokens: 512, folder, kind: '逐句解析', batch: filePath, runId, stream: true });
+  return { markdown: content, stats };
+}
+
+// 逐句追问：带上改动上下文与历史问答，继续回答用户的新问题
+async function explainFollowUp({ folder, filePath, hunk, line, segments, previousQA, question, runId = null }) {
+  if (!question || !String(question).trim()) throw new Error('缺少追问问题');
+  const ctx = buildExplainContext({ filePath, hunk, line, segments });
+  const system = '你是代码讲解专家，已为用户讲解过一组代码改动，请用简洁中文回答用户的追问，不要复述代码。';
+  const messages = [
+    { role: 'system', content: system },
+    { role: 'user', content: `${ctx.context}\n\n请先理解这组改动。` },
+  ];
+  for (const qa of Array.isArray(previousQA) ? previousQA : []) {
+    if (!qa || typeof qa.question !== 'string') continue;
+    messages.push({ role: 'user', content: qa.question });
+    messages.push({ role: 'assistant', content: typeof qa.answer === 'string' ? qa.answer : '' });
+  }
+  messages.push({ role: 'user', content: String(question) });
+  const { content, stats } = await chatWithStats(null, messages, {
+    maxTokens: 1024, folder, kind: '追问', batch: filePath, runId, stream: true,
+  });
   return { markdown: content, stats };
 }
 
@@ -754,4 +907,4 @@ async function testConnection(settings) {
   }
 }
 
-module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, testConnection, listModels, getCurrentRun, setChunkSender, cancelRun };
+module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, explainFollowUp, testConnection, listModels, getCurrentRun, setChunkSender, cancelRun, pauseRun, resumeRun, buildOverviewSystem };

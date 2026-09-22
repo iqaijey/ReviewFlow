@@ -11,6 +11,7 @@ const DEFAULTS = {
   kimiModel: '',
   codexModel: '',
   customPrompt: '',
+  customDimensions: '',
   reasoningEffort: '',
   timeoutMin: 10,
   overviewWidth: 0,
