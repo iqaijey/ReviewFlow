@@ -88,6 +88,30 @@ export default {
     formRow.appendChild(imgInput);
     editor.appendChild(formRow);
 
+    const urlSupported = typeof api.fetchPrdFromUrl === 'function' &&
+      typeof api.fetchDesignFromUrl === 'function';
+
+    const prdUrlRow = el('div', { class: 'plan-url-row' });
+    const prdUrlInput = el('input', {
+      class: 'settings-input', type: 'text',
+      placeholder: '或粘贴 PRD 网页链接（语雀 / 飞书 / Notion / wiki…）', spellcheck: 'false',
+    });
+    const prdUrlBtn = el('button', { class: 'btn', type: 'button' }, '导入链接');
+    prdUrlRow.appendChild(prdUrlInput);
+    prdUrlRow.appendChild(prdUrlBtn);
+    editor.appendChild(prdUrlRow);
+
+    const imgUrlRow = el('div', { class: 'plan-url-row' });
+    const imgUrlInput = el('input', {
+      class: 'settings-input', type: 'text',
+      placeholder: '或粘贴设计稿链接（图片直链 / Figma 等网页，网页将整页截图）',
+      spellcheck: 'false',
+    });
+    const imgUrlBtn = el('button', { class: 'btn', type: 'button' }, '导入链接');
+    imgUrlRow.appendChild(imgUrlInput);
+    imgUrlRow.appendChild(imgUrlBtn);
+    editor.appendChild(imgUrlRow);
+
     const extraInput = el('input', {
       class: 'settings-input', type: 'text',
       placeholder: '额外要求（可选），例如：优先考虑现有架构、给出分阶段落地计划',
@@ -99,10 +123,20 @@ export default {
     editor.appendChild(currentLine);
 
     const prdDetails = el('details', { class: 'plan-prd' });
-    const prdSummary = el('summary', {}, 'PRD 内容预览');
-    const prdPre = el('pre', {});
+    const prdSummary = el('summary', {}, 'PRD 内容预览 / 编辑');
+    const prdTextArea = el('textarea', {
+      class: 'settings-input settings-textarea plan-prd-text',
+      rows: '10', spellcheck: 'false',
+      placeholder: 'PRD 正文，可手动粘贴或编辑',
+    });
+    const prdActions = el('div', { class: 'plan-prd-actions' });
+    const prdSaveBtn = el('button', { class: 'btn', type: 'button' }, '保存为新方案');
+    prdActions.appendChild(prdSaveBtn);
+    prdActions.appendChild(el('span', { class: 'plan-hint-inline' },
+      '方案暂不支持原地修改 PRD：保存会以编辑后的文本新建方案（原方案保留在历史列表，设计稿自动迁移）'));
     prdDetails.appendChild(prdSummary);
-    prdDetails.appendChild(prdPre);
+    prdDetails.appendChild(prdTextArea);
+    prdDetails.appendChild(prdActions);
     prdDetails.style.display = 'none';
     editor.appendChild(prdDetails);
 
@@ -149,6 +183,11 @@ export default {
       prdBtn.disabled = disabled || running;
       imgBtn.disabled = disabled || running || !editing;
       genBtn.disabled = disabled || running || !editing || !editing.prdText;
+      prdUrlInput.disabled = disabled || running || !urlSupported;
+      prdUrlBtn.disabled = disabled || running || !urlSupported;
+      imgUrlInput.disabled = disabled || running || !urlSupported;
+      imgUrlBtn.disabled = disabled || running || !urlSupported;
+      prdSaveBtn.disabled = disabled || running || !editing;
     };
 
     const renderEditing = () => {
@@ -161,8 +200,12 @@ export default {
       }
       currentLine.textContent = `当前方案：${editing.title}（PRD：${editing.prdFileName}，` +
         `设计稿 ${editing.images.length} 张）`;
-      prdSummary.textContent = `PRD 内容预览 · ${editing.prdFileName}`;
-      prdPre.textContent = editing.prdText;
+      prdSummary.textContent = `PRD 内容预览 / 编辑 · ${editing.prdFileName}`;
+      // 仅切换方案时回填，避免上传图片等操作触发重绘而覆盖未保存的编辑
+      if (prdTextArea.dataset.planId !== editing.planId) {
+        prdTextArea.dataset.planId = editing.planId;
+        prdTextArea.value = editing.prdText;
+      }
       prdDetails.style.display = '';
       thumbWall.textContent = '';
       for (const img of editing.images) {
@@ -181,7 +224,29 @@ export default {
     const clearEditing = () => {
       editing = null;
       titleInput.value = '';
+      prdTextArea.dataset.planId = '';
+      prdTextArea.value = '';
       renderEditing();
+    };
+
+    // planStore 无更新 PRD 接口：以新文本重建方案，并把当前方案的设计稿迁移过去
+    const recreatePlanWithText = async (prdText, title, prdFileName) => {
+      const meta = await api.createPlan({
+        folder: state.folder, title, prdFileName, prdText,
+      });
+      const prevImages = editing ? editing.images : [];
+      editing = { planId: meta.id, title, prdFileName, prdText, images: [] };
+      for (const img of prevImages) {
+        const base64 = String(img.dataUrl || '').split(',')[1] || '';
+        if (!base64) continue;
+        const saved = await api.addPlanImage({
+          folder: state.folder, planId: meta.id, name: img.name, base64,
+        });
+        editing.images.push({ name: saved.name || img.name, dataUrl: img.dataUrl });
+      }
+      titleInput.value = title;
+      renderEditing();
+      loadList();
     };
 
     // ---------- 方案列表 ----------
@@ -325,6 +390,68 @@ export default {
       }
     });
 
+    // ---------- PRD 链接导入 ----------
+    prdUrlBtn.addEventListener('click', async () => {
+      const url = prdUrlInput.value.trim();
+      if (!url || !state.folder || prdUrlBtn.disabled) return;
+      if (!/^https?:\/\//i.test(url)) {
+        alert('请输入完整的 http/https 链接');
+        return;
+      }
+      if (editing && !confirm(
+        '将用抓取的 PRD 文本新建方案并切换为当前编辑（原方案保留在历史列表，设计稿会迁移），继续？')) {
+        return;
+      }
+      prdUrlBtn.disabled = true;
+      prdUrlBtn.textContent = '正在抓取…';
+      toast('正在抓取网页，如遇登录墙会弹出窗口，登录后关闭即可');
+      try {
+        const { title: pageTitle, text } = await api.fetchPrdFromUrl(url);
+        if (!text || !text.trim()) throw new Error('未抓取到正文内容');
+        let hostname = url;
+        try { hostname = new URL(url).hostname; } catch { /* 保底用原始 URL */ }
+        const title = titleInput.value.trim() || pageTitle || hostname;
+        await recreatePlanWithText(text, title, hostname);
+        prdUrlInput.value = '';
+        resultBox.textContent = '';
+        setStatus(null);
+        toast(`已导入 PRD「${title}」`);
+      } catch (err) {
+        alert('导入 PRD 链接失败：' + errText(err));
+      } finally {
+        prdUrlBtn.disabled = false;
+        prdUrlBtn.textContent = '导入链接';
+        refreshButtons();
+      }
+    });
+
+    // ---------- 保存编辑后的 PRD（新建方案） ----------
+    prdSaveBtn.addEventListener('click', async () => {
+      if (!state.folder || !editing || prdSaveBtn.disabled) return;
+      const text = prdTextArea.value;
+      if (!text.trim()) {
+        alert('PRD 内容为空');
+        return;
+      }
+      if (text === editing.prdText) {
+        toast('内容未修改');
+        return;
+      }
+      if (!confirm('将以编辑后的 PRD 文本新建方案（原方案保留在历史列表，设计稿会迁移到新方案），继续？')) {
+        return;
+      }
+      prdSaveBtn.disabled = true;
+      try {
+        await recreatePlanWithText(text, editing.title, editing.prdFileName);
+        toast('已保存为新方案');
+      } catch (err) {
+        alert('保存失败：' + errText(err));
+      } finally {
+        prdSaveBtn.disabled = false;
+        refreshButtons();
+      }
+    });
+
     // ---------- 设计稿上传 ----------
     imgInput.addEventListener('change', async () => {
       const files = [...(imgInput.files || [])];
@@ -354,6 +481,42 @@ export default {
         imgBtn.disabled = false;
         refreshButtons();
         if (added) toast(`已添加 ${added} 张设计稿`);
+      }
+    });
+
+    // ---------- 设计稿链接导入 ----------
+    imgUrlBtn.addEventListener('click', async () => {
+      const url = imgUrlInput.value.trim();
+      if (!url || !state.folder || imgUrlBtn.disabled) return;
+      if (!/^https?:\/\//i.test(url)) {
+        alert('请输入完整的 http/https 链接');
+        return;
+      }
+      if (!editing) {
+        toast('请先选择或导入 PRD 创建方案');
+        return;
+      }
+      imgUrlBtn.disabled = true;
+      imgUrlBtn.textContent = '正在抓取…';
+      try {
+        const { name, base64, mime } = await api.fetchDesignFromUrl(url);
+        const saved = await api.addPlanImage({
+          folder: state.folder, planId: editing.planId, name, base64,
+        });
+        editing.images.push({
+          name: saved.name || name,
+          dataUrl: `data:${mime || 'image/png'};base64,${base64}`,
+        });
+        imgUrlInput.value = '';
+        renderEditing();
+        loadList();
+        toast(`已导入设计稿 ${saved.name || name}`);
+      } catch (err) {
+        alert('导入设计稿链接失败：' + errText(err));
+      } finally {
+        imgUrlBtn.disabled = false;
+        imgUrlBtn.textContent = '导入链接';
+        refreshButtons();
       }
     });
 

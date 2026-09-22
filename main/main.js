@@ -9,6 +9,7 @@ const settingsStore = require('./settings');
 const iconManager = require('./iconManager');
 const store = require('./store');
 const planStore = require('./planStore');
+const urlFetch = require('./urlFetch');
 const updateChecker = require('./updateChecker');
 
 // 窗口位置/尺寸记忆：启动时恢复上次 bounds（位置校验仍在屏幕范围内，不在则只恢复尺寸），
@@ -434,6 +435,22 @@ function registerIpcHandlers() {
       return planStore.getActivePlan(folder);
     } catch (err) {
       throw new Error(`获取启用方案失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:fetchPrdUrl', async (_event, url) => {
+    try {
+      return await urlFetch.fetchPrdFromUrl(url);
+    } catch (err) {
+      throw new Error(`抓取 PRD 链接失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:fetchDesignUrl', async (_event, url) => {
+    try {
+      return await urlFetch.fetchDesignFromUrl(url);
+    } catch (err) {
+      throw new Error(`抓取设计稿链接失败：${err.message}`);
     }
   });
 

@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('autoReview', {
   deletePlan: (folder, planId) => ipcRenderer.invoke('plan:delete', folder, planId),
   setActivePlan: (folder, planId) => ipcRenderer.invoke('plan:setActive', folder, planId),
   getActivePlan: (folder) => ipcRenderer.invoke('plan:getActive', folder),
+  fetchPrdFromUrl: (url) => ipcRenderer.invoke('plan:fetchPrdUrl', url),
+  fetchDesignFromUrl: (url) => ipcRenderer.invoke('plan:fetchDesignUrl', url),
   getRecentProjects: () => ipcRenderer.invoke('recent:list'),
   addRecentProject: (folder) => ipcRenderer.invoke('recent:add', folder),
   startWatch: (folder) => ipcRenderer.invoke('watch:start', folder),
