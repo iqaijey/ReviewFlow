@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('autoReview', {
   pauseRun: () => ipcRenderer.invoke('ai:pause'),
   resumeRun: () => ipcRenderer.invoke('ai:resume'),
   explainFollowUp: (payload) => ipcRenderer.invoke('ai:explainFollowUp', payload),
+  reviewFollowUp: (payload) => ipcRenderer.invoke('ai:reviewFollowUp', payload),
   saveReview: (payload) => ipcRenderer.invoke('review:save', payload),
   listReviews: (folder) => ipcRenderer.invoke('review:list', folder),
   exportReview: (payload) => ipcRenderer.invoke('review:export', payload),

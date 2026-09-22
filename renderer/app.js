@@ -255,6 +255,23 @@ for (const tab of tabs) {
   tabBar.append(btn);
 }
 
+// 「改动总览」文件项的 AI 按钮：切到 Review tab 后通知其消费 pendingAnalyzeFile
+bus.addEventListener('file:analyze', () => {
+  activateTab('review');
+  bus.dispatchEvent(new CustomEvent('file:analyze:ready'));
+});
+
+// .md 容器内的代码块：点击复制全部代码，不影响其他点击行为
+document.addEventListener('click', (ev) => {
+  const pre = ev.target && typeof ev.target.closest === 'function'
+    ? ev.target.closest('.md pre')
+    : null;
+  if (!pre) return;
+  navigator.clipboard.writeText(pre.textContent)
+    .then(() => toast('已复制代码块'))
+    .catch(() => { /* 剪贴板不可用时静默 */ });
+});
+
 // 快捷键：⌘1~5 切 tab，⌘R 重新扫描
 document.addEventListener('keydown', (ev) => {
   if (!ev.metaKey || ev.shiftKey || ev.altKey || ev.ctrlKey) return;

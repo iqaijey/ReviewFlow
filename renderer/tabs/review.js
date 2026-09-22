@@ -1,5 +1,5 @@
 // 多角度 Review：整体分析 / 逐文件 / 历史 三种模式
-import { renderMarkdown } from '../markdown.js';
+import { renderMarkdown, renderMarkdownPage } from '../markdown.js';
 
 const DIMENSIONS = [
   '改动概述', '安全性', '结构问题', '影响面',
@@ -65,10 +65,10 @@ export default {
     const statsLine = (stats) =>
       el('div', { class: 'ai-stats' }, formatStats(stats));
 
-    const defaultExportName = () => {
+    const defaultExportName = (ext) => {
       const d = new Date();
       return `review-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-        `-${pad(d.getHours())}${pad(d.getMinutes())}.md`;
+        `-${pad(d.getHours())}${pad(d.getMinutes())}.${ext || 'md'}`;
     };
 
     const exportBtn = (markdown) => {
@@ -76,7 +76,9 @@ export default {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         try {
-          const saved = await api.exportReview({ defaultName: defaultExportName(), markdown });
+          const saved = await api.exportReview({
+            defaultName: defaultExportName('md'), content: markdown, ext: 'md',
+          });
           if (saved && toast) toast(`已保存到 ${saved}`);
         } catch (err) {
           alert('导出失败：' + errText(err));
@@ -85,6 +87,121 @@ export default {
         }
       });
       return btn;
+    };
+
+    const copyBtn = (markdown) => {
+      const btn = el('button', { class: 'btn', type: 'button' }, '复制');
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(markdown)
+          .then(() => { if (toast) toast('已复制到剪贴板'); })
+          .catch(() => { /* 剪贴板不可用时静默 */ });
+      });
+      return btn;
+    };
+
+    const exportHtmlBtn = (markdown) => {
+      const btn = el('button', { class: 'btn', type: 'button' }, '导出 HTML');
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          const saved = await api.exportReview({
+            defaultName: defaultExportName('html'),
+            content: renderMarkdownPage(autoTitle(), markdown),
+            ext: 'html',
+          });
+          if (saved && toast) toast(`已保存到 ${saved}`);
+        } catch (err) {
+          alert('导出失败：' + errText(err));
+        } finally {
+          btn.disabled = false;
+        }
+      });
+      return btn;
+    };
+
+    const exportGroup = (markdown) => {
+      const group = el('div', { class: 'export-group' });
+      group.appendChild(exportBtn(markdown));
+      group.appendChild(copyBtn(markdown));
+      group.appendChild(exportHtmlBtn(markdown));
+      return group;
+    };
+
+    // 整体分析每次运行递增，用于丢弃过期追问结果
+    let runSeq = 0;
+
+    // 追问区：基于本次整体分析结果继续提问，最多保留最近 10 轮（首条固定为初始结果）
+    const buildFollowUp = (markdown) => {
+      if (typeof api.reviewFollowUp !== 'function') return null;
+      const seqAtBuild = runSeq;
+      let previousQA = [{ question: '（初始结果）', answer: markdown }];
+      const box = el('div', { class: 'explain-follow' });
+      const list = el('div', { class: 'explain-follow-list' });
+      const form = el('div', { class: 'explain-follow-form' });
+      const input = el('input', {
+        class: 'settings-input', type: 'text',
+        placeholder: '就这次评审继续提问…', spellcheck: 'false',
+      });
+      const askBtn = el('button', { class: 'btn', type: 'button' }, '提问');
+      form.appendChild(input);
+      form.appendChild(askBtn);
+      box.appendChild(list);
+      box.appendChild(form);
+
+      let asking = false;
+      const submit = async () => {
+        const question = input.value.trim();
+        if (!question || asking || !state.changes) return;
+        asking = true;
+        input.disabled = true;
+        askBtn.disabled = true;
+        const item = el('div', { class: 'explain-follow-item' });
+        item.appendChild(el('div', { class: 'explain-follow-q' }, `> ${question}`));
+        const loading = el('div', { class: 'explain-loading' });
+        loading.appendChild(el('span', { class: 'spinner' }));
+        loading.appendChild(el('span', {}, 'AI 思考中，请稍候…'));
+        item.appendChild(loading);
+        list.appendChild(item);
+        const runId = `run-${Date.now()}`;
+        try {
+          const { markdown: answer, stats } = await api.reviewFollowUp({
+            folder: state.folder,
+            files: state.changes.files,
+            previousQA: [...previousQA],
+            question,
+            runId,
+          });
+          if (seqAtBuild !== runSeq) return; // 已重新分析，丢弃过期回答
+          loading.remove();
+          const mdNode = el('div', { class: 'md' });
+          mdNode.innerHTML = renderMarkdown(answer);
+          item.appendChild(mdNode);
+          item.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
+          previousQA.push({ question, answer });
+          if (previousQA.length > 10) {
+            previousQA = [previousQA[0], ...previousQA.slice(-9)];
+          }
+          input.value = '';
+        } catch (err) {
+          if (seqAtBuild !== runSeq) return;
+          loading.remove();
+          if (errText(err).includes('已被用户终止')) {
+            item.appendChild(el('div', { class: 'empty-hint' }, '已终止'));
+          } else {
+            item.appendChild(el('div', { class: 'error-text' },
+              `追问失败：${errText(err)}`));
+          }
+        } finally {
+          asking = false;
+          input.disabled = false;
+          askBtn.disabled = false;
+        }
+      };
+      askBtn.addEventListener('click', submit);
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') submit();
+      });
+      return box;
     };
 
     const countChanges = (files) => {
@@ -134,9 +251,13 @@ export default {
         chips.appendChild(chip);
       }
     };
+    let cachedCustomPrompt = '';
     const loadDimensions = () => {
       api.getSettings()
-        .then((s) => rebuildChips(parseCustomDimensions(s && s.customDimensions)))
+        .then((s) => {
+          cachedCustomPrompt = (s && s.customPrompt) || '';
+          rebuildChips(parseCustomDimensions(s && s.customDimensions));
+        })
         .catch(() => {});
     };
     rebuildChips([]);
@@ -187,14 +308,32 @@ export default {
       const box = el('div', { class: 'review-error' });
       box.appendChild(el('div', { class: 'error-text' }, `分析失败：${message}`));
       const retry = el('button', { class: 'btn', type: 'button' }, '重试');
-      retry.addEventListener('click', runAnalysis);
+      retry.addEventListener('click', () => runAnalysis());
       box.appendChild(retry);
+      // 一次性自定义要求重跑：仅本次生效，不写回设置
+      const rerunForm = el('div', { class: 'explain-follow-form review-rerun-form' });
+      const promptInput = el('input', {
+        class: 'settings-input', type: 'text',
+        placeholder: '临时自定义要求，可留空', spellcheck: 'false',
+      });
+      promptInput.value = cachedCustomPrompt;
+      const rerunBtn = el('button', { class: 'btn', type: 'button' }, '按此重跑');
+      rerunBtn.addEventListener('click', () => runAnalysis(promptInput.value));
+      promptInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') runAnalysis(promptInput.value);
+      });
+      rerunForm.appendChild(promptInput);
+      rerunForm.appendChild(rerunBtn);
+      box.appendChild(rerunForm);
       setStatus(box);
     };
 
-    const runAnalysis = async () => {
+    const runAnalysis = async (overridePrompt) => {
       if (running || !state.changes || !state.changes.files.length) return;
+      // 按钮点击会把事件对象传进来，只接受字符串形式的临时要求
+      const override = typeof overridePrompt === 'string' ? overridePrompt.trim() : '';
       running = true;
+      runSeq++;
       startBtn.disabled = true;
       mdBox.textContent = '';
       setStatus(loadingNode());
@@ -209,15 +348,19 @@ export default {
           })
         : null;
       try {
-        const { markdown, stats } = await api.analyzeOverview({
+        const payload = {
           folder: state.folder,
           files: state.changes.files,
           runId,
-        });
+        };
+        if (override) payload.customPromptOverride = override;
+        const { markdown, stats } = await api.analyzeOverview(payload);
         setStatus(null);
         mdBox.innerHTML = renderMarkdown(markdown);
         mdBox.appendChild(statsLine(stats));
-        mdBox.appendChild(exportBtn(markdown));
+        mdBox.appendChild(exportGroup(markdown));
+        const followUp = buildFollowUp(markdown);
+        if (followUp) mdBox.appendChild(followUp);
         notify('AI 分析完成', '多角度 Review 已生成');
         // 历史保存失败不影响结果展示
         try {
@@ -243,8 +386,11 @@ export default {
     startBtn.addEventListener('click', runAnalysis);
 
     // ---------- 逐文件 ----------
+    // file → 触发该文件逐文件分析（供「改动总览」的 AI 按钮跳转后调用）
+    const fileAnalyzeTriggers = new Map();
     const renderFilesPanel = () => {
       filesPanel.textContent = '';
+      fileAnalyzeTriggers.clear();
       if (!state.changes || !state.changes.files.length) {
         filesPanel.appendChild(el('div', { class: 'empty-hint' },
           '请先在「改动总览」中加载项目改动'));
@@ -265,6 +411,10 @@ export default {
         filesPanel.appendChild(card);
 
         let fileRunning = false;
+        fileAnalyzeTriggers.set(file, () => {
+          card.scrollIntoView({ block: 'start' });
+          analyzeBtn.click();
+        });
         analyzeBtn.addEventListener('click', async () => {
           if (fileRunning) return;
           fileRunning = true;
@@ -363,6 +513,16 @@ export default {
         setStatus(el('div', { class: 'empty-hint' },
           '改动已更新，以下分析结果可能已过期，可点击「开始 AI 分析」重新生成'));
       }
+    });
+
+    // 「改动总览」文件项的 AI 按钮跳转过来后，切到逐文件模式并自动分析该文件
+    bus.addEventListener('file:analyze:ready', () => {
+      const file = state.pendingAnalyzeFile;
+      if (!file) return;
+      state.pendingAnalyzeFile = null;
+      switchMode('files');
+      const trigger = fileAnalyzeTriggers.get(file);
+      if (trigger) trigger();
     });
 
     refresh();

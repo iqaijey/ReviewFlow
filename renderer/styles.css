@@ -368,6 +368,7 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow-x: auto;
+  cursor: copy;
 }
 
 .md pre code {
@@ -1324,6 +1325,14 @@ body {
 }
 .explain-follow-form { display: flex; gap: 8px; }
 .explain-follow-form .settings-input { flex: 1; }
+
+/* 结果导出按钮组 / 失败重跑表单 */
+.export-group {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.review-rerun-form { margin-top: 8px; }
 
 /* ---------- 快捷键说明弹窗 ---------- */
 .shortcut-list {

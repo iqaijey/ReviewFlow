@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -8,6 +8,49 @@ const settingsStore = require('./settings');
 const iconManager = require('./iconManager');
 const store = require('./store');
 const updateChecker = require('./updateChecker');
+
+// 窗口位置/尺寸记忆：启动时恢复上次 bounds（位置校验仍在屏幕范围内，不在则只恢复尺寸），
+// resize/move 防抖 1s 写回，close 时立即写一次
+function readWindowState(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeWindowState(data, displays) {
+  if (!data || typeof data.width !== 'number' || typeof data.height !== 'number') return null;
+  const state = { width: Math.round(data.width), height: Math.round(data.height) };
+  if (typeof data.x === 'number' && typeof data.y === 'number') {
+    const x = Math.round(data.x);
+    const y = Math.round(data.y);
+    const visible = (Array.isArray(displays) ? displays : []).some((d) => {
+      const a = d && d.workArea;
+      return a && x >= a.x - 8 && y >= a.y - 8 && x < a.x + a.width && y < a.y + a.height;
+    });
+    if (visible) {
+      state.x = x;
+      state.y = y;
+    }
+  }
+  return state;
+}
+
+function windowStatePath() {
+  return path.join(app.getPath('userData'), 'window-state.json');
+}
+
+function loadWindowState() {
+  return normalizeWindowState(readWindowState(windowStatePath()), screen.getAllDisplays());
+}
+
+function saveWindowState(win) {
+  try {
+    if (win.isDestroyed() || win.isMaximized() || win.isFullScreen()) return;
+    fs.writeFileSync(windowStatePath(), JSON.stringify(win.getBounds()), 'utf8');
+  } catch { /* 写失败不影响使用 */ }
+}
 
 // 支持 `electron . /path/to/project` 直接打开项目
 function getInitialFolder() {
@@ -23,9 +66,11 @@ function getInitialFolder() {
 }
 
 function createWindow() {
+  const savedState = loadWindowState();
   const win = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    width: (savedState && savedState.width) || 1440,
+    height: (savedState && savedState.height) || 900,
+    ...(savedState && savedState.x != null ? { x: savedState.x, y: savedState.y } : {}),
     minWidth: 1100,
     minHeight: 700,
     titleBarStyle: 'hiddenInset',
@@ -35,6 +80,24 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  let stateTimer = null;
+  const scheduleStateSave = () => {
+    if (stateTimer) clearTimeout(stateTimer);
+    stateTimer = setTimeout(() => {
+      stateTimer = null;
+      saveWindowState(win);
+    }, 1000);
+  };
+  win.on('resize', scheduleStateSave);
+  win.on('move', scheduleStateSave);
+  win.on('close', () => {
+    if (stateTimer) {
+      clearTimeout(stateTimer);
+      stateTimer = null;
+    }
+    saveWindowState(win);
   });
 
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -190,12 +253,19 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('review:export', async (_event, payload) => {
+    const ext = payload && payload.ext === 'html' ? 'html' : 'md';
+    // 兼容旧字段 markdown 兜底
+    const content = payload && typeof payload.content === 'string'
+      ? payload.content
+      : String((payload && payload.markdown) || '');
     const result = await dialog.showSaveDialog({
-      defaultPath: payload.defaultName,
-      filters: [{ name: 'Markdown', extensions: ['md'] }],
+      defaultPath: payload && payload.defaultName,
+      filters: ext === 'html'
+        ? [{ name: 'HTML', extensions: ['html'] }]
+        : [{ name: 'Markdown', extensions: ['md'] }],
     });
     if (result.canceled || !result.filePath) return null;
-    await fs.promises.writeFile(result.filePath, payload.markdown, 'utf8');
+    await fs.promises.writeFile(result.filePath, content, 'utf8');
     return result.filePath;
   });
 
@@ -257,6 +327,17 @@ function registerIpcHandlers() {
     }
   });
 
+  ipcMain.handle('ai:reviewFollowUp', async (event, payload) => {
+    try {
+      ai.setChunkSender((runId, text) => {
+        if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+      });
+      return await ai.reviewFollowUp(payload);
+    } catch (err) {
+      throw new Error(`AI 追问失败：${err.message}`);
+    }
+  });
+
   ipcMain.handle('update:check', async () => {
     try {
       return await updateChecker.checkForUpdates();
@@ -302,3 +383,6 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   app.quit();
 });
+
+// 导出窗口状态读写逻辑供 node 层测试（Electron 运行时不使用）
+module.exports = { readWindowState, normalizeWindowState, saveWindowState };

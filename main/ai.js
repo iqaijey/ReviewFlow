@@ -452,6 +452,12 @@ function withCustomPrompt(system, cfg) {
   return extra ? `${system}\n额外评审要求（必须遵守）：${extra}` : system;
 }
 
+// 一次性自定义要求重跑：非空时替代设置里的 customPrompt（不写回设置）
+function applyPromptOverride(cfg, customPromptOverride) {
+  const override = typeof customPromptOverride === 'string' ? customPromptOverride.trim() : '';
+  return override ? { ...cfg, customPrompt: override } : cfg;
+}
+
 // 拉取 opencode 本机可用模型列表（provider/model 每行一个）
 function listOpencodeModels() {
   const bin = resolveCliBin('opencode');
@@ -704,11 +710,11 @@ async function runOverviewBatches(cfg, state) {
   return { markdown, stats: aggregateStats(state.statsList), paused: false };
 }
 
-async function analyzeOverview({ folder, files, runId = null }) {
+async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '' }) {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可分析的改动');
   }
-  const cfg = await getSettings();
+  const cfg = applyPromptOverride(await getSettings(), customPromptOverride);
   const { batches, reviewed } = splitIntoBatches(folder, files);
   const state = {
     kind: 'overview',
@@ -789,11 +795,11 @@ async function runFullBatches(cfg, state) {
 }
 
 // 完整讲解：分批逐文件讲透
-async function explainFull({ folder, files, runId = null }) {
+async function explainFull({ folder, files, runId = null, customPromptOverride = '' }) {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可讲解的改动');
   }
-  const cfg = await getSettings();
+  const cfg = applyPromptOverride(await getSettings(), customPromptOverride);
   const { batches, reviewed } = splitIntoBatches(folder, files);
   const state = {
     kind: 'full',
@@ -898,6 +904,33 @@ async function explainFollowUp({ folder, filePath, hunk, line, segments, previou
   return { markdown: content, stats };
 }
 
+// 评审/讲解结果追问：带上本次全部改动上下文与历史问答（首条通常是初始评审/讲解），回答用户的新问题
+const FOLLOWUP_CONTEXT_MAX_CHARS = 10000;
+
+async function reviewFollowUp({ folder, files, previousQA, question, runId = null }) {
+  if (!question || !String(question).trim()) throw new Error('缺少追问问题');
+  if (!Array.isArray(files) || files.length === 0) throw new Error('没有可参考的改动');
+  let context = files.map((file) => fileToPromptText(folder, file)).join('\n\n');
+  if (context.length > FOLLOWUP_CONTEXT_MAX_CHARS) {
+    context = `${context.slice(0, FOLLOWUP_CONTEXT_MAX_CHARS)}\n（改动过多已截断）`;
+  }
+  const system = '你是资深代码评审与讲解专家，已为用户评审/讲解过一批代码改动，请用简洁中文回答用户就这批改动的追问。';
+  const messages = [
+    { role: 'system', content: system },
+    { role: 'user', content: `${context}\n\n这是本次改动的 diff 与相关定义，请先理解。` },
+  ];
+  for (const qa of Array.isArray(previousQA) ? previousQA : []) {
+    if (!qa || typeof qa.question !== 'string') continue;
+    messages.push({ role: 'user', content: qa.question });
+    messages.push({ role: 'assistant', content: typeof qa.answer === 'string' ? qa.answer : '' });
+  }
+  messages.push({ role: 'user', content: String(question) });
+  const { content, stats } = await chatWithStats(null, messages, {
+    maxTokens: 2048, folder, kind: '追问', batch: '评审追问', runId, stream: true,
+  });
+  return { markdown: content, stats };
+}
+
 async function testConnection(settings) {
   try {
     await chat(settings, [{ role: 'user', content: 'ping' }], { maxTokens: 5, kind: '测试连接' });
@@ -907,4 +940,4 @@ async function testConnection(settings) {
   }
 }
 
-module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, explainFollowUp, testConnection, listModels, getCurrentRun, setChunkSender, cancelRun, pauseRun, resumeRun, buildOverviewSystem };
+module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, explainFollowUp, reviewFollowUp, testConnection, listModels, getCurrentRun, setChunkSender, cancelRun, pauseRun, resumeRun, buildOverviewSystem };

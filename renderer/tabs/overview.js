@@ -28,6 +28,10 @@ export default {
     toolbar.appendChild(baseSelect);
     toolbar.appendChild(customBaseInput);
     toolbar.appendChild(searchInput);
+    // 对当前选中文件的所有 hunk 一键折叠/展开
+    const collapseAllBtn = el('button', { class: 'btn', type: 'button' }, '全部折叠');
+    collapseAllBtn.disabled = true;
+    toolbar.appendChild(collapseAllBtn);
 
     const body = el('div', { class: 'overview-body' });
     const fileList = el('div', { class: 'file-list' });
@@ -75,11 +79,38 @@ export default {
     let searchQuery = '';
     let readStatEl = null;
     let branchInfo = { current: '', branches: [] };
+    let lastDiffFile = null; // 上次渲染 diff 的文件，用于重渲染时恢复滚动与选中行
+    let lastDiffRows = [];
+
+    // 无选中文件（或文件无 hunk）时禁用；全部已折叠时切换为「全部展开」
+    const updateCollapseAllBtn = () => {
+      const file = state.selectedFile;
+      const hunks = file && Array.isArray(file.hunks) ? file.hunks : [];
+      collapseAllBtn.disabled = !hunks.length;
+      const allCollapsed = hunks.length > 0 &&
+        hunks.every((_, i) => collapsed.has(`${file.path}#${i}`));
+      collapseAllBtn.textContent = allCollapsed ? '全部展开' : '全部折叠';
+    };
+    collapseAllBtn.addEventListener('click', () => {
+      const file = state.selectedFile;
+      if (!file || !file.hunks.length) return;
+      const allCollapsed = file.hunks.every((_, i) => collapsed.has(`${file.path}#${i}`));
+      file.hunks.forEach((_, i) => {
+        const key = `${file.path}#${i}`;
+        if (allCollapsed) collapsed.delete(key);
+        else collapsed.add(key);
+      });
+      renderDiff(file);
+      applySearchHighlight(false);
+    });
 
     const showEmpty = (text) => {
       statsBar.textContent = '';
       fileList.textContent = '';
       diffView.textContent = '';
+      collapseAllBtn.disabled = true;
+      lastDiffFile = null;
+      lastDiffRows = [];
       const hint = el('div', { class: 'empty-hint' });
       hint.innerHTML =
         '<svg class="empty-icon" width="44" height="44" viewBox="0 0 24 24" fill="none" ' +
@@ -391,6 +422,15 @@ export default {
           info.appendChild(chips);
         }
         item.appendChild(info);
+        const aiBtn = el('button', {
+          class: 'read-btn', type: 'button', title: '在「多角度 Review」中逐文件分析',
+        }, 'AI');
+        aiBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          state.pendingAnalyzeFile = file;
+          bus.dispatchEvent(new CustomEvent('file:analyze'));
+        });
+        item.appendChild(aiBtn);
         const readBtn = el('button', { class: 'read-btn', type: 'button' },
           isRead ? '取消已读' : '已读');
         readBtn.addEventListener('click', (ev) => {
@@ -417,9 +457,21 @@ export default {
 
     // ---------- diff 视图 ----------
     const renderDiff = (file) => {
+      // 同一文件重渲染时保留滚动位置和选中行（按 clickableRows 中的 pos）；
+      // 按 path 判断，changes:loaded 后 file 对象已换新但仍是同一文件
+      const sameFile = lastDiffFile != null && lastDiffFile.path === file.path;
+      const savedScroll = sameFile ? diffView.scrollTop : 0;
+      let savedPos = null;
+      if (sameFile) {
+        const idx = lastDiffRows.findIndex((r) => r.row.classList.contains('line-selected'));
+        if (idx >= 0) savedPos = idx;
+      }
       diffView.textContent = '';
       if (!file.hunks.length) {
         diffView.appendChild(el('div', { class: 'empty-hint' }, '该文件没有可展示的 diff 内容'));
+        lastDiffFile = file;
+        lastDiffRows = [];
+        updateCollapseAllBtn();
         return;
       }
       const clickableRows = [];
@@ -437,6 +489,7 @@ export default {
           const nowCollapsed = collapsed.has(key);
           hunkBox.classList.toggle('hunk-collapsed', nowCollapsed);
           arrow.textContent = nowCollapsed ? '▸' : '▾';
+          updateCollapseAllBtn();
         });
         hunkBox.appendChild(header);
         const table = el('div', { class: 'diff-lines' });
@@ -532,6 +585,15 @@ export default {
           highlightRange(drag.start, pos);
         });
       });
+
+      // 恢复重渲染前的滚动位置和选中行
+      diffView.scrollTop = savedScroll;
+      if (savedPos != null && savedPos < clickableRows.length) {
+        clickableRows[savedPos].row.classList.add('line-selected');
+      }
+      lastDiffFile = file;
+      lastDiffRows = clickableRows;
+      updateCollapseAllBtn();
     };
 
     const render = () => {

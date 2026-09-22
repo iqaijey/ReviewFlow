@@ -13,6 +13,31 @@ function renderInline(text) {
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 }
 
+// 导出 HTML 用的内嵌深色样式
+const EXPORT_CSS =
+  'body{margin:40px auto;max-width:860px;padding:0 16px;background:#1e1e1e;' +
+  'color:#d4d4d4;font:14px/1.7 -apple-system,"PingFang SC","Helvetica Neue",sans-serif}' +
+  'h1,h2,h3{color:#fff;line-height:1.4}' +
+  'a{color:#4ec9b0}' +
+  'blockquote{margin:0;padding:0 12px;border-left:3px solid #444;color:#9d9d9d}' +
+  'pre{background:#1b1b1b;border:1px solid #333;border-radius:6px;padding:10px 12px;' +
+  'overflow-x:auto}' +
+  'code{font-family:Menlo,Consolas,monospace;font-size:12.5px;background:#2d2d2d;' +
+  'border-radius:4px;padding:2px 5px}' +
+  'pre code{background:none;padding:0}' +
+  'h1{font-size:20px;border-bottom:1px solid #333;padding-bottom:8px}';
+
+// 完整可独立打开的 HTML 文档：doctype + meta charset + 内嵌深色 CSS + 标题 + 正文
+export function renderMarkdownPage(title, mdText) {
+  const body = renderMarkdown(mdText);
+  return '<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
+    `<title>${escapeHtml(String(title ?? ''))}</title>\n` +
+    `<style>${EXPORT_CSS}</style>\n</head>\n<body>\n` +
+    `<h1>${escapeHtml(String(title ?? ''))}</h1>\n` +
+    `${body}\n</body>\n</html>\n`;
+}
+
 export function renderMarkdown(mdText) {
   const src = escapeHtml(String(mdText ?? ''));
   const lines = src.split('\n');
