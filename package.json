@@ -5,7 +5,7 @@
   "main": "main/main.js",
   "scripts": {
     "start": "electron .",
-    "pack": "electron-builder --mac --arm64 && mkdir -p dmgs && cp dist/*.dmg dmgs/"
+    "pack": "electron-builder --mac --arm64 && mkdir -p dmgs && rm -f dmgs/*.dmg && cp dist/*.dmg dmgs/"
   },
   "devDependencies": {
     "electron": "^41.7.1",
