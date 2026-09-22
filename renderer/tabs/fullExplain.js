@@ -19,6 +19,35 @@ function formatStats(stats) {
   return parts.join(' · ');
 }
 
+// 注入 prompt 的方案长度上限，避免方案过长撑爆 prompt
+const PLAN_CONTEXT_MAX_CHARS = 6000;
+const PLAN_PRD_EXCERPT_CHARS = 500;
+
+// 拉取当前项目启用的需求方案并构造注入文本；未开启、无方案或接口缺失时返回 null
+async function loadPlanContext(api, folder) {
+  if (!folder || localStorage.getItem('planReviewEnabled') === '0') return null;
+  if (typeof api.getActivePlan !== 'function') return null;
+  let plan = null;
+  try {
+    plan = await api.getActivePlan(folder);
+  } catch {
+    return null;
+  }
+  if (!plan || !plan.planMarkdown) return null;
+  let markdown = String(plan.planMarkdown);
+  if (markdown.length > PLAN_CONTEXT_MAX_CHARS) {
+    markdown = `${markdown.slice(0, PLAN_CONTEXT_MAX_CHARS)}\n\n（方案内容过长，已截断至 ${PLAN_CONTEXT_MAX_CHARS} 字）`;
+  }
+  const prdText = String(plan.prdText || '');
+  const prdExcerpt = prdText.length > PLAN_PRD_EXCERPT_CHARS
+    ? `${prdText.slice(0, PLAN_PRD_EXCERPT_CHARS)}…（PRD 过长已截断）`
+    : prdText;
+  const title = plan.title || '未命名方案';
+  let section = `## 需求方案（评审依据）\n\n方案标题：${title}\n\n${markdown}`;
+  if (prdExcerpt) section += `\n\n### PRD 摘要\n\n${prdExcerpt}`;
+  return { title, section };
+}
+
 export default {
   id: 'fullExplain',
   title: '完整讲解',
@@ -287,11 +316,14 @@ export default {
           })
         : null;
       try {
-        const { markdown, stats } = await api.explainFull({
+        const payload = {
           folder: state.folder,
           files: state.changes.files,
           runId,
-        });
+        };
+        const plan = await loadPlanContext(api, state.folder);
+        if (plan) payload.planContext = plan.section;
+        const { markdown, stats } = await api.explainFull(payload);
         setStatus(null);
         mdBox.innerHTML = renderMarkdown(markdown);
         mdBox.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));

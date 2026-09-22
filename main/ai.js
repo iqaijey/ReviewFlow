@@ -286,7 +286,14 @@ async function readSseStream(resp, runId) {
 async function chatWithStats(settings, messages, { maxTokens = 1024, temperature = 0.2, folder = null, kind = 'AI 调用', batch = '', batchIndex = null, batchTotal = null, runId = null, stream = false } = {}) {
   const cfg = settings || (await getSettings());
   const startedAt = Date.now();
-  const promptText = messages.map((m) => m.content).join('\n\n');
+  // 多模态消息（content 为数组）只提取文本部分用于运行详情展示
+  const promptText = messages.map((m) => {
+    if (typeof m.content === 'string') return m.content;
+    if (Array.isArray(m.content)) {
+      return m.content.map((p) => (p && p.type === 'text' ? p.text : '[图片]')).join('\n');
+    }
+    return String(m.content || '');
+  }).join('\n\n');
   if (cfg.backend === 'opencode' || cfg.backend === 'kimi' || cfg.backend === 'codex') {
     // 模型与思考强度以 CLI 实际配置为准：未覆盖时读取各 CLI 的 config.toml
     let model = '默认模型';
@@ -458,6 +465,11 @@ function applyPromptOverride(cfg, customPromptOverride) {
   return override ? { ...cfg, customPrompt: override } : cfg;
 }
 
+// 需求方案上下文（评审依据）：非字符串或空白串时不注入
+function normalizePlanContext(planContext) {
+  return typeof planContext === 'string' && planContext.trim() ? planContext.trim() : '';
+}
+
 // 拉取 opencode 本机可用模型列表（provider/model 每行一个）
 function listOpencodeModels() {
   const bin = resolveCliBin('opencode');
@@ -605,22 +617,25 @@ function fileToPromptText(folder, file) {
   return text;
 }
 
-// 固定 9 个评审维度 + 可选自定义维度（customDimensions 每行一个，最多 8 个，插在「可复用性」与「总结与建议」之间）
-function overviewSectionsText(cfg) {
+// 固定 9 个评审维度 + 可选自定义维度（customDimensions 每行一个，最多 8 个，插在「可复用性」与「总结与建议」之间）；
+// hasPlan 为 true 时再追加「需求符合度」一节，对照需求方案/PRD 评审
+function overviewSectionsText(cfg, hasPlan = false) {
   const dims = (cfg && typeof cfg.customDimensions === 'string' ? cfg.customDimensions : '')
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 8);
   const extra = dims.length ? ` / ${dims.map((d) => `## ${d}`).join(' / ')}` : '';
+  const plan = hasPlan ? ' / ## 需求符合度' : '';
   return '严格使用以下二级标题分节：' +
     '## 改动概述 / ## 安全性 / ## 结构问题 / ## 影响面 / ## 逻辑严谨性 / ## 臃肿与冗余 / ## 可扩展性 / ## 可复用性' +
-    `${extra} / ## 总结与建议。` +
-    '每节给出具体、可执行的发现，无问题的小节明确说『未发现问题』，引用具体文件和行号。';
+    `${extra}${plan} / ## 总结与建议。` +
+    '每节给出具体、可执行的发现，无问题的小节明确说『未发现问题』，引用具体文件和行号。' +
+    (hasPlan ? '「需求符合度」一节须对照需求方案/PRD：检查改动是否实现了方案要求的功能点、有无遗漏、有无超出方案范围的实现。' : '');
 }
 
-function buildOverviewSystem(cfg) {
-  return `你是一位资深代码评审专家，请用中文、markdown 格式输出，${overviewSectionsText(cfg)}`;
+function buildOverviewSystem(cfg, hasPlan = false) {
+  return `你是一位资深代码评审专家，请用中文、markdown 格式输出，${overviewSectionsText(cfg, hasPlan)}`;
 }
 
 // 按累计长度分批：每批 ≤10000 字符（含上下文），文件不拆半，单文件超限则单独成批并截断；最多 6 批
@@ -662,6 +677,7 @@ function splitIntoBatches(folder, files) {
 // 正常跑完后多批结果再综合（续跑走到这里同样执行综合）
 async function runOverviewBatches(cfg, state) {
   const { folder, batches, system, runId } = state;
+  const planPrefix = state.planContext ? `${state.planContext}\n\n` : '';
   for (let i = state.nextIndex; i < batches.length; i += 1) {
     if (pauseRequested) {
       pauseRequested = false;
@@ -675,7 +691,7 @@ async function runOverviewBatches(cfg, state) {
       };
     }
     const label = batches.length > 1 ? `（第 ${i + 1}/${batches.length} 批）` : '';
-    const user = `以下是本次未提交的代码改动${label}（unified diff），请进行多角度评审：\n\n${batches[i].join('\n\n')}`;
+    const user = `${planPrefix}以下是本次未提交的代码改动${label}（unified diff），请进行多角度评审：\n\n${batches[i].join('\n\n')}`;
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -694,12 +710,12 @@ async function runOverviewBatches(cfg, state) {
     if (combined.length > 12000) combined = `${combined.slice(0, 12000)}\n(内容过长已截断)`;
     const synthSystem = withCustomPrompt(
       '你是一位资深代码评审专家。以下是针对同一批代码改动分批评审得到的多份评审结果，' +
-      `请将它们去重、合并为一份完整评审，仍${overviewSectionsText(cfg)}`,
+      `请将它们去重、合并为一份完整评审，仍${overviewSectionsText(cfg, Boolean(state.planContext))}`,
       cfg,
     );
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: synthSystem },
-      { role: 'user', content: combined },
+      { role: 'user', content: `${planPrefix}${combined}` },
     ], { maxTokens: 4096, folder, kind: '整体分析', batch: '（综合结果）', batchIndex: batches.length, batchTotal: batches.length, runId, stream: true });
     markdown = content;
     state.statsList.push(stats);
@@ -710,17 +726,19 @@ async function runOverviewBatches(cfg, state) {
   return { markdown, stats: aggregateStats(state.statsList), paused: false };
 }
 
-async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '' }) {
+async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '', planContext = '' }) {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可分析的改动');
   }
   const cfg = applyPromptOverride(await getSettings(), customPromptOverride);
+  const plan = normalizePlanContext(planContext);
   const { batches, reviewed } = splitIntoBatches(folder, files);
   const state = {
     kind: 'overview',
     folder,
     files,
-    system: withCustomPrompt(buildOverviewSystem(cfg), cfg),
+    system: withCustomPrompt(buildOverviewSystem(cfg, Boolean(plan)), cfg),
+    planContext: plan,
     batchResults: [],
     statsList: [],
     nextIndex: 0,
@@ -737,9 +755,10 @@ async function analyzeOverview({ folder, files, runId = null, customPromptOverri
   }
 }
 
-async function analyzeFile({ folder, file, runId = null }) {
+async function analyzeFile({ folder, file, runId = null, planContext = '' }) {
   if (!file || !file.path) throw new Error('缺少要分析的文件');
   const cfg = await getSettings();
+  const plan = normalizePlanContext(planContext);
   let text = fileToPromptText(folder, file);
   if (text.length > 12000) text = `${text.slice(0, 12000)}\n(diff 过长已截断)`;
   const system = withCustomPrompt(
@@ -748,7 +767,7 @@ async function analyzeFile({ folder, file, runId = null }) {
     '每节给出具体、可执行的发现，无问题的小节明确说『未发现问题』，引用具体行号。',
     cfg,
   );
-  const user = `以下是该文件的代码改动（unified diff），请进行评审：\n\n${text}`;
+  const user = `${plan ? `${plan}\n\n` : ''}以下是该文件的代码改动（unified diff），请进行评审：\n\n${text}`;
   const { content, stats } = await chatWithStats(cfg, [
     { role: 'system', content: system },
     { role: 'user', content: user },
@@ -765,6 +784,7 @@ const FULL_EXPLAIN_SYSTEM =
 // 完整讲解分批循环：各批结果直接拼接（每批内容互不重叠，无需综合）；支持暂停/续跑
 async function runFullBatches(cfg, state) {
   const { folder, batches, system, runId } = state;
+  const planPrefix = state.planContext ? `${state.planContext}\n\n` : '';
   for (let i = state.nextIndex; i < batches.length; i += 1) {
     if (pauseRequested) {
       pauseRequested = false;
@@ -778,7 +798,7 @@ async function runFullBatches(cfg, state) {
       };
     }
     const label = batches.length > 1 ? `（第 ${i + 1}/${batches.length} 批）` : '';
-    const user = `以下是部分代码改动${label}（unified diff），请完整详细讲解：\n\n${batches[i].join('\n\n')}`;
+    const user = `${planPrefix}以下是部分代码改动${label}（unified diff），请完整详细讲解：\n\n${batches[i].join('\n\n')}`;
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -795,7 +815,7 @@ async function runFullBatches(cfg, state) {
 }
 
 // 完整讲解：分批逐文件讲透
-async function explainFull({ folder, files, runId = null, customPromptOverride = '' }) {
+async function explainFull({ folder, files, runId = null, customPromptOverride = '', planContext = '' }) {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可讲解的改动');
   }
@@ -806,6 +826,7 @@ async function explainFull({ folder, files, runId = null, customPromptOverride =
     folder,
     files,
     system: withCustomPrompt(FULL_EXPLAIN_SYSTEM, cfg),
+    planContext: normalizePlanContext(planContext),
     parts: [],
     statsList: [],
     nextIndex: 0,
@@ -862,12 +883,14 @@ function buildExplainContext({ filePath, hunk, line, segments }) {
   };
 }
 
-async function explainChange({ folder, filePath, hunk, line, segments, runId = null }) {
+async function explainChange({ folder, filePath, hunk, line, segments, runId = null, planContext = '' }) {
   const ctx = buildExplainContext({ filePath, hunk, line, segments });
+  const plan = normalizePlanContext(planContext);
+  const prefix = plan ? `${plan}\n\n` : '';
   // 框选多行：整体解释这组改动
   if (ctx.multi) {
     const system = '你是代码讲解专家，用简洁中文解释一组代码改动的整体含义、意图和潜在影响，3~5 句话，不要复述代码。';
-    const user = `${ctx.context}\n\n请把这些以 > 标出的改动作为一个整体来解释。`;
+    const user = `${prefix}${ctx.context}\n\n请把这些以 > 标出的改动作为一个整体来解释。`;
     const { content, stats } = await chatWithStats(null, [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -875,7 +898,7 @@ async function explainChange({ folder, filePath, hunk, line, segments, runId = n
     return { markdown: content, stats };
   }
   const system = '你是代码讲解专家，用简洁中文解释单行代码改动的含义、意图和潜在影响，2~4 句话，不要复述代码。';
-  const user = `${ctx.context}\n\n请解释以 > 标出的那一行改动。`;
+  const user = `${prefix}${ctx.context}\n\n请解释以 > 标出的那一行改动。`;
   const { content, stats } = await chatWithStats(null, [
     { role: 'system', content: system },
     { role: 'user', content: user },
@@ -884,13 +907,14 @@ async function explainChange({ folder, filePath, hunk, line, segments, runId = n
 }
 
 // 逐句追问：带上改动上下文与历史问答，继续回答用户的新问题
-async function explainFollowUp({ folder, filePath, hunk, line, segments, previousQA, question, runId = null }) {
+async function explainFollowUp({ folder, filePath, hunk, line, segments, previousQA, question, runId = null, planContext = '' }) {
   if (!question || !String(question).trim()) throw new Error('缺少追问问题');
   const ctx = buildExplainContext({ filePath, hunk, line, segments });
+  const plan = normalizePlanContext(planContext);
   const system = '你是代码讲解专家，已为用户讲解过一组代码改动，请用简洁中文回答用户的追问，不要复述代码。';
   const messages = [
     { role: 'system', content: system },
-    { role: 'user', content: `${ctx.context}\n\n请先理解这组改动。` },
+    { role: 'user', content: `${plan ? `${plan}\n\n` : ''}${ctx.context}\n\n请先理解这组改动。` },
   ];
   for (const qa of Array.isArray(previousQA) ? previousQA : []) {
     if (!qa || typeof qa.question !== 'string') continue;
@@ -907,9 +931,10 @@ async function explainFollowUp({ folder, filePath, hunk, line, segments, previou
 // 评审/讲解结果追问：带上本次全部改动上下文与历史问答（首条通常是初始评审/讲解），回答用户的新问题
 const FOLLOWUP_CONTEXT_MAX_CHARS = 10000;
 
-async function reviewFollowUp({ folder, files, previousQA, question, runId = null }) {
+async function reviewFollowUp({ folder, files, previousQA, question, runId = null, planContext = '' }) {
   if (!question || !String(question).trim()) throw new Error('缺少追问问题');
   if (!Array.isArray(files) || files.length === 0) throw new Error('没有可参考的改动');
+  const plan = normalizePlanContext(planContext);
   let context = files.map((file) => fileToPromptText(folder, file)).join('\n\n');
   if (context.length > FOLLOWUP_CONTEXT_MAX_CHARS) {
     context = `${context.slice(0, FOLLOWUP_CONTEXT_MAX_CHARS)}\n（改动过多已截断）`;
@@ -917,7 +942,7 @@ async function reviewFollowUp({ folder, files, previousQA, question, runId = nul
   const system = '你是资深代码评审与讲解专家，已为用户评审/讲解过一批代码改动，请用简洁中文回答用户就这批改动的追问。';
   const messages = [
     { role: 'system', content: system },
-    { role: 'user', content: `${context}\n\n这是本次改动的 diff 与相关定义，请先理解。` },
+    { role: 'user', content: `${plan ? `${plan}\n\n` : ''}${context}\n\n这是本次改动的 diff 与相关定义，请先理解。` },
   ];
   for (const qa of Array.isArray(previousQA) ? previousQA : []) {
     if (!qa || typeof qa.question !== 'string') continue;
@@ -931,6 +956,59 @@ async function reviewFollowUp({ folder, files, previousQA, question, runId = nul
   return { markdown: content, stats };
 }
 
+function imageMime(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  return {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  }[ext] || 'image/png';
+}
+
+const PLAN_SYSTEM =
+  '你是一位资深技术专家，正在根据需求文档（PRD）与设计稿为项目制定技术实现方案。请用中文、markdown 格式输出，严格使用以下二级标题分节：' +
+  '## 需求理解 / ## 功能点拆解 / ## 模块与类设计 / ## 关键文件与改动点预估 / ## 数据流 / ## 风险点 / ## 验收标准。' +
+  '方案要具体、可落地：结合项目实际技术栈与目录结构推断涉及的关键文件，引用具体模块/类/文件名，不要泛泛而谈。';
+
+// 需求方案生成：API 后端走 OpenAI 兼容多模态消息（base64 data URL），
+// CLI 后端（opencode/kimi/codex）在 prompt 中给出图片绝对路径，由 CLI 自行读取
+async function generatePlan({ prdText, prdFileName, imagePaths = [], extraRequirement = '' } = {}, settings, { runId = null, folder = null } = {}) {
+  if (!prdText || !String(prdText).trim()) throw new Error('缺少 PRD 内容');
+  const cfg = settings || (await getSettings());
+  const images = (Array.isArray(imagePaths) ? imagePaths : []).filter((p) => typeof p === 'string' && p);
+  const extra = typeof extraRequirement === 'string' && extraRequirement.trim()
+    ? `\n\n额外要求（必须遵守）：${extraRequirement.trim()}`
+    : '';
+  const prdSection = `需求文档（${prdFileName || 'PRD'}）全文：\n\n${prdText}`;
+  const options = { maxTokens: 8192, folder, kind: '方案生成', batch: prdFileName || '', runId, stream: true };
+  if (cfg.backend === 'opencode' || cfg.backend === 'kimi' || cfg.backend === 'codex') {
+    const imgNote = images.length
+      ? `\n\n设计稿图片（共 ${images.length} 张，请用文件读取能力逐张查看后结合设计稿输出方案）：\n${images.map((p) => `- ${p}`).join('\n')}`
+      : '';
+    const user = `${prdSection}${imgNote}${extra}\n\n请基于以上需求文档${images.length ? '与设计稿' : ''}输出技术方案。`;
+    const { content, stats } = await chatWithStats(cfg, [
+      { role: 'system', content: PLAN_SYSTEM },
+      { role: 'user', content: user },
+    ], options);
+    return { markdown: content, stats };
+  }
+  const text = `${prdSection}${extra}\n\n请基于以上需求文档${images.length ? '与设计稿图片' : ''}输出技术方案。`;
+  const parts = [{ type: 'text', text }];
+  for (const p of images) {
+    try {
+      const base64 = fs.readFileSync(p).toString('base64');
+      parts.push({ type: 'image_url', image_url: { url: `data:${imageMime(p)};base64,${base64}` } });
+    } catch { /* 读取失败的图片跳过 */ }
+  }
+  const { content, stats } = await chatWithStats(cfg, [
+    { role: 'system', content: PLAN_SYSTEM },
+    { role: 'user', content: parts.length > 1 ? parts : text },
+  ], options);
+  return { markdown: content, stats };
+}
+
 async function testConnection(settings) {
   try {
     await chat(settings, [{ role: 'user', content: 'ping' }], { maxTokens: 5, kind: '测试连接' });
@@ -940,4 +1018,4 @@ async function testConnection(settings) {
   }
 }
 
-module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, explainFollowUp, reviewFollowUp, testConnection, listModels, getCurrentRun, setChunkSender, cancelRun, pauseRun, resumeRun, buildOverviewSystem };
+module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, explainFollowUp, reviewFollowUp, generatePlan, testConnection, listModels, getCurrentRun, setChunkSender, cancelRun, pauseRun, resumeRun, buildOverviewSystem };

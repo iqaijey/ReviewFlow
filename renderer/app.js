@@ -3,6 +3,7 @@ import reviewTab from './tabs/review.js';
 import explainTab from './tabs/explain.js';
 import fullExplainTab from './tabs/fullExplain.js';
 import settingsTab from './tabs/settings.js';
+import planTab from './tabs/plan.js';
 import { createRunDetails } from './runDetails.js';
 
 const api = window.autoReview;
@@ -206,7 +207,7 @@ if (typeof api.onFsChanged === 'function') {
 const ctx = { api, state, bus, selectFolder, el, errText, notify, toast, changesFingerprint };
 ctx.showRunDetails = createRunDetails(ctx);
 
-const tabs = [overviewTab, reviewTab, explainTab, fullExplainTab, settingsTab];
+const tabs = [overviewTab, reviewTab, explainTab, fullExplainTab, settingsTab, planTab];
 const tabBar = document.getElementById('tab-bar');
 const tabContent = document.getElementById('tab-content');
 const mounted = new Map();
@@ -221,6 +222,7 @@ const TAB_ICONS = {
   explain: svgWrap('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
   fullExplain: svgWrap('<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>'),
   settings: svgWrap('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>'),
+  plan: svgWrap('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'),
 };
 
 function activateTab(id) {
@@ -272,7 +274,7 @@ document.addEventListener('click', (ev) => {
     .catch(() => { /* 剪贴板不可用时静默 */ });
 });
 
-// 快捷键：⌘1~5 切 tab，⌘R 重新扫描
+// 快捷键：⌘1~6 切 tab，⌘R 重新扫描
 document.addEventListener('keydown', (ev) => {
   if (!ev.metaKey || ev.shiftKey || ev.altKey || ev.ctrlKey) return;
   if (ev.key >= '1' && ev.key <= String(tabs.length)) {

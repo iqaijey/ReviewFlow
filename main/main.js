@@ -1,12 +1,14 @@
 const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const git = require('./git');
 const ai = require('./ai');
 const settingsStore = require('./settings');
 const iconManager = require('./iconManager');
 const store = require('./store');
+const planStore = require('./planStore');
 const updateChecker = require('./updateChecker');
 
 // 窗口位置/尺寸记忆：启动时恢复上次 bounds（位置校验仍在屏幕范围内，不在则只恢复尺寸），
@@ -130,6 +132,18 @@ function startWatcher(folder, sender) {
       if (!sender.isDestroyed()) sender.send('fs:changed');
     }, 1500);
   });
+}
+
+// 方案图片的磁盘绝对路径（与 planStore 存储结构一致：plans/<sha1(folder)前16位>/<planId>/images/），
+// 供 CLI 后端在 prompt 中引用；按 getPlanDetail 返回的图片顺序输出，仅保留存在的文件
+function planImagePaths(folder, planId, imageNames) {
+  const hash = crypto.createHash('sha1').update(String(folder)).digest('hex').slice(0, 16);
+  const dir = path.join(app.getPath('userData'), 'plans', hash, String(planId), 'images');
+  return (Array.isArray(imageNames) ? imageNames : [])
+    .map((img) => path.basename(String((img && img.name) || img || '')))
+    .filter(Boolean)
+    .map((name) => path.join(dir, name))
+    .filter((p) => fs.existsSync(p));
 }
 
 function registerIpcHandlers() {
@@ -335,6 +349,91 @@ function registerIpcHandlers() {
       return await ai.reviewFollowUp(payload);
     } catch (err) {
       throw new Error(`AI 追问失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:list', async (_event, folder) => {
+    try {
+      return planStore.listPlans(folder);
+    } catch (err) {
+      throw new Error(`获取方案列表失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:create', async (_event, payload) => {
+    try {
+      return planStore.createPlan(payload);
+    } catch (err) {
+      throw new Error(`创建方案失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:addImage', async (_event, payload) => {
+    try {
+      return planStore.addPlanImage(payload);
+    } catch (err) {
+      throw new Error(`添加设计稿失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:removeImage', async (_event, payload) => {
+    try {
+      return planStore.removePlanImage(payload);
+    } catch (err) {
+      throw new Error(`移除设计稿失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:detail', async (_event, folder, planId) => {
+    try {
+      return planStore.getPlanDetail(folder, planId);
+    } catch (err) {
+      throw new Error(`获取方案详情失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:generate', async (event, payload) => {
+    try {
+      const { folder, planId, extraRequirement, runId } = payload || {};
+      const detail = planStore.getPlanDetail(folder, planId);
+      if (!detail) throw new Error('方案不存在或已被删除');
+      ai.setChunkSender((id, text) => {
+        if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId: id, text });
+      });
+      const { markdown, stats } = await ai.generatePlan({
+        prdText: detail.prdText,
+        prdFileName: detail.prdFileName,
+        imagePaths: planImagePaths(folder, planId, detail.images),
+        extraRequirement,
+      }, null, { runId, folder });
+      planStore.savePlanResult({ folder, planId, markdown });
+      return { markdown, stats };
+    } catch (err) {
+      throw new Error(`生成方案失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:delete', async (_event, folder, planId) => {
+    try {
+      return planStore.deletePlan(folder, planId);
+    } catch (err) {
+      throw new Error(`删除方案失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:setActive', async (_event, folder, planId) => {
+    try {
+      return planStore.setActivePlan(folder, planId);
+    } catch (err) {
+      throw new Error(`设置启用方案失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('plan:getActive', async (_event, folder) => {
+    try {
+      return planStore.getActivePlan(folder);
+    } catch (err) {
+      throw new Error(`获取启用方案失败：${err.message}`);
     }
   });
 

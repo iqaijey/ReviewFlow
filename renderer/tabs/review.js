@@ -6,6 +6,36 @@ const DIMENSIONS = [
   '逻辑严谨性', '臃肿与冗余', '可扩展性', '可复用性',
 ];
 
+// 注入 prompt 的方案长度上限，避免方案过长撑爆 prompt
+const PLAN_CONTEXT_MAX_CHARS = 6000;
+const PLAN_PRD_EXCERPT_CHARS = 500;
+
+const planReviewEnabled = () => localStorage.getItem('planReviewEnabled') !== '0';
+
+// 拉取当前项目启用的需求方案并构造注入文本；未开启、无方案或接口缺失时返回 null
+async function loadPlanContext(api, folder) {
+  if (!folder || !planReviewEnabled() || typeof api.getActivePlan !== 'function') return null;
+  let plan = null;
+  try {
+    plan = await api.getActivePlan(folder);
+  } catch {
+    return null;
+  }
+  if (!plan || !plan.planMarkdown) return null;
+  let markdown = String(plan.planMarkdown);
+  if (markdown.length > PLAN_CONTEXT_MAX_CHARS) {
+    markdown = `${markdown.slice(0, PLAN_CONTEXT_MAX_CHARS)}\n\n（方案内容过长，已截断至 ${PLAN_CONTEXT_MAX_CHARS} 字）`;
+  }
+  const prdText = String(plan.prdText || '');
+  const prdExcerpt = prdText.length > PLAN_PRD_EXCERPT_CHARS
+    ? `${prdText.slice(0, PLAN_PRD_EXCERPT_CHARS)}…（PRD 过长已截断）`
+    : prdText;
+  const title = plan.title || '未命名方案';
+  let section = `## 需求方案（评审依据）\n\n方案标题：${title}\n\n${markdown}`;
+  if (prdExcerpt) section += `\n\n### PRD 摘要\n\n${prdExcerpt}`;
+  return { title, section };
+}
+
 const pad = (n) => String(n).padStart(2, '0');
 
 // {backend, model, effort, promptTokens, completionTokens, durationMs}
@@ -32,6 +62,13 @@ export default {
 
   mount(container, ctx) {
     const { el, bus, state, api, errText, notify, toast } = ctx;
+
+    // 顶部方案参照提示条，内容由 refreshPlanHint 填充
+    const planHint = el('div', {
+      class: 'stat-item',
+      style: 'display:none; font-size:12px; margin-bottom:6px;',
+    });
+    container.appendChild(planHint);
 
     // ---------- 分段切换 ----------
     const seg = el('div', { class: 'seg-control' });
@@ -237,12 +274,17 @@ export default {
     // ---------- 整体分析 ----------
     const toolbar = el('div', { class: 'review-toolbar' });
     const chips = el('div', { class: 'review-chips' });
-    // 固定 8 维度 + 设置里的自定义维度（每行一个）
+    // 固定 8 维度 + 设置里的自定义维度（每行一个）+ 参照方案时追加「需求符合度」
     const parseCustomDimensions = (raw) =>
       String(raw || '').split('\n').map((t) => t.trim()).filter(Boolean);
-    const rebuildChips = (custom) => {
+    let cachedCustomDims = [];
+    let activePlanTitle = '';
+    const rebuildChips = () => {
       chips.textContent = '';
-      for (const dim of DIMENSIONS.concat(custom)) {
+      const dims = activePlanTitle
+        ? DIMENSIONS.concat(cachedCustomDims, ['需求符合度'])
+        : DIMENSIONS.concat(cachedCustomDims);
+      for (const dim of dims) {
         const chip = el('button', { class: 'review-chip', type: 'button' }, dim);
         chip.addEventListener('click', () => {
           const target = findSection(dim);
@@ -256,12 +298,36 @@ export default {
       api.getSettings()
         .then((s) => {
           cachedCustomPrompt = (s && s.customPrompt) || '';
-          rebuildChips(parseCustomDimensions(s && s.customDimensions));
+          cachedCustomDims = parseCustomDimensions(s && s.customDimensions);
+          rebuildChips();
         })
         .catch(() => {});
     };
-    rebuildChips([]);
+    // 有启用方案时在 tab 顶部提示；× 临时关闭参照（写 localStorage，不删方案）
+    const refreshPlanHint = async () => {
+      const plan = await loadPlanContext(api, state.folder);
+      activePlanTitle = plan ? plan.title : '';
+      rebuildChips();
+      planHint.textContent = '';
+      if (!plan) {
+        planHint.style.display = 'none';
+        return;
+      }
+      planHint.style.display = '';
+      planHint.appendChild(el('span', {}, `📋 参照方案：${plan.title}`));
+      const closeBtn = el('button', {
+        class: 'run-link', type: 'button',
+        title: '临时关闭，评审时不再参照需求方案',
+      }, '×');
+      closeBtn.addEventListener('click', () => {
+        localStorage.setItem('planReviewEnabled', '0');
+        refreshPlanHint();
+      });
+      planHint.appendChild(closeBtn);
+    };
+    rebuildChips();
     loadDimensions();
+    refreshPlanHint();
     bus.addEventListener('settings:saved', loadDimensions);
     const startBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '开始 AI 分析');
     const runLink = el('button', {
@@ -354,6 +420,8 @@ export default {
           runId,
         };
         if (override) payload.customPromptOverride = override;
+        const plan = await loadPlanContext(api, state.folder);
+        if (plan) payload.planContext = plan.section;
         const { markdown, stats } = await api.analyzeOverview(payload);
         setStatus(null);
         mdBox.innerHTML = renderMarkdown(markdown);
@@ -431,9 +499,10 @@ export default {
               })
             : null;
           try {
-            const { markdown, stats } = await api.analyzeFile({
-              folder: state.folder, file, runId,
-            });
+            const filePayload = { folder: state.folder, file, runId };
+            const plan = await loadPlanContext(api, state.folder);
+            if (plan) filePayload.planContext = plan.section;
+            const { markdown, stats } = await api.analyzeFile(filePayload);
             resultBox.textContent = '';
             const mdNode = el('div', { class: 'md' });
             mdNode.innerHTML = renderMarkdown(markdown);
@@ -505,9 +574,12 @@ export default {
       historyPanel.appendChild(list);
     };
 
+    bus.addEventListener('plan:changed', refreshPlanHint);
+
     bus.addEventListener('changes:loaded', () => {
       refresh();
       renderFilesPanel();
+      refreshPlanHint(); // 文件夹可能已切换，刷新参照方案提示
       // 保留已有分析结果，只提示可能过期，不打断阅读/进行中的分析
       if (mdBox.firstChild) {
         setStatus(el('div', { class: 'empty-hint' },
