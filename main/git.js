@@ -445,4 +445,4 @@ function extractClasses(folder, file) {
   }));
 }
 
-module.exports = { getChanges, getBranches, getCommits };
+module.exports = { getChanges, getBranches, getCommits, parseDiff };

@@ -459,6 +459,40 @@ function withCustomPrompt(system, cfg) {
   return extra ? `${system}\n额外评审要求（必须遵守）：${extra}` : system;
 }
 
+// .reviewflow.md 项目级评审规范：按 mtime 缓存，mtime 变化后重读
+const projectRulesCache = new Map();
+const PROJECT_RULES_MAX_CHARS = 4000;
+
+function loadProjectRules(folder) {
+  if (!folder) return '';
+  const file = path.join(folder, '.reviewflow.md');
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    return '';
+  }
+  const cached = projectRulesCache.get(file);
+  if (cached && cached.mtime === stat.mtimeMs) return cached.content;
+  let content;
+  try {
+    content = fs.readFileSync(file, 'utf8').trim();
+  } catch {
+    return '';
+  }
+  if (content.length > PROJECT_RULES_MAX_CHARS) {
+    content = `${content.slice(0, PROJECT_RULES_MAX_CHARS)}\n（内容过长已截断）`;
+  }
+  projectRulesCache.set(file, { mtime: stat.mtimeMs, content });
+  return content;
+}
+
+// 评审类 system prompt 末尾追加项目评审规范（.reviewflow.md 为空时原样返回）
+function withProjectRules(system, folder) {
+  const rules = loadProjectRules(folder);
+  return rules ? `${system}\n\n## 项目评审规范（.reviewflow.md）\n${rules}` : system;
+}
+
 // 一次性自定义要求重跑：非空时替代设置里的 customPrompt（不写回设置）
 function applyPromptOverride(cfg, customPromptOverride) {
   const override = typeof customPromptOverride === 'string' ? customPromptOverride.trim() : '';
@@ -708,11 +742,11 @@ async function runOverviewBatches(cfg, state) {
       .map((r, i) => `【第 ${i + 1} 批评审结果】\n${r}`)
       .join('\n\n');
     if (combined.length > 12000) combined = `${combined.slice(0, 12000)}\n(内容过长已截断)`;
-    const synthSystem = withCustomPrompt(
+    const synthSystem = withProjectRules(withCustomPrompt(
       '你是一位资深代码评审专家。以下是针对同一批代码改动分批评审得到的多份评审结果，' +
       `请将它们去重、合并为一份完整评审，仍${overviewSectionsText(cfg, Boolean(state.planContext))}`,
       cfg,
-    );
+    ), state.folder);
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: synthSystem },
       { role: 'user', content: `${planPrefix}${combined}` },
@@ -737,7 +771,7 @@ async function analyzeOverview({ folder, files, runId = null, customPromptOverri
     kind: 'overview',
     folder,
     files,
-    system: withCustomPrompt(buildOverviewSystem(cfg, Boolean(plan)), cfg),
+    system: withProjectRules(withCustomPrompt(buildOverviewSystem(cfg, Boolean(plan)), cfg), folder),
     planContext: plan,
     batchResults: [],
     statsList: [],
@@ -761,12 +795,12 @@ async function analyzeFile({ folder, file, runId = null, planContext = '' }) {
   const plan = normalizePlanContext(planContext);
   let text = fileToPromptText(folder, file);
   if (text.length > 12000) text = `${text.slice(0, 12000)}\n(diff 过长已截断)`;
-  const system = withCustomPrompt(
+  const system = withProjectRules(withCustomPrompt(
     '你是一位资深代码评审专家，请用中文、markdown 格式输出，严格使用以下二级标题分节：' +
     '## 改动概述 / ## 问题与风险 / ## 改进建议。' +
     '每节给出具体、可执行的发现，无问题的小节明确说『未发现问题』，引用具体行号。',
     cfg,
-  );
+  ), folder);
   const user = `${plan ? `${plan}\n\n` : ''}以下是该文件的代码改动（unified diff），请进行评审：\n\n${text}`;
   const { content, stats } = await chatWithStats(cfg, [
     { role: 'system', content: system },
@@ -825,7 +859,7 @@ async function explainFull({ folder, files, runId = null, customPromptOverride =
     kind: 'full',
     folder,
     files,
-    system: withCustomPrompt(FULL_EXPLAIN_SYSTEM, cfg),
+    system: withProjectRules(withCustomPrompt(FULL_EXPLAIN_SYSTEM, cfg), folder),
     planContext: normalizePlanContext(planContext),
     parts: [],
     statsList: [],
@@ -889,7 +923,7 @@ async function explainChange({ folder, filePath, hunk, line, segments, runId = n
   const prefix = plan ? `${plan}\n\n` : '';
   // 框选多行：整体解释这组改动
   if (ctx.multi) {
-    const system = '你是代码讲解专家，用简洁中文解释一组代码改动的整体含义、意图和潜在影响，3~5 句话，不要复述代码。';
+    const system = withProjectRules('你是代码讲解专家，用简洁中文解释一组代码改动的整体含义、意图和潜在影响，3~5 句话，不要复述代码。', folder);
     const user = `${prefix}${ctx.context}\n\n请把这些以 > 标出的改动作为一个整体来解释。`;
     const { content, stats } = await chatWithStats(null, [
       { role: 'system', content: system },
@@ -897,7 +931,7 @@ async function explainChange({ folder, filePath, hunk, line, segments, runId = n
     ], { maxTokens: 768, folder, kind: '逐句解析', batch: filePath, runId, stream: true });
     return { markdown: content, stats };
   }
-  const system = '你是代码讲解专家，用简洁中文解释单行代码改动的含义、意图和潜在影响，2~4 句话，不要复述代码。';
+  const system = withProjectRules('你是代码讲解专家，用简洁中文解释单行代码改动的含义、意图和潜在影响，2~4 句话，不要复述代码。', folder);
   const user = `${prefix}${ctx.context}\n\n请解释以 > 标出的那一行改动。`;
   const { content, stats } = await chatWithStats(null, [
     { role: 'system', content: system },
@@ -911,7 +945,7 @@ async function explainFollowUp({ folder, filePath, hunk, line, segments, previou
   if (!question || !String(question).trim()) throw new Error('缺少追问问题');
   const ctx = buildExplainContext({ filePath, hunk, line, segments });
   const plan = normalizePlanContext(planContext);
-  const system = '你是代码讲解专家，已为用户讲解过一组代码改动，请用简洁中文回答用户的追问，不要复述代码。';
+  const system = withProjectRules('你是代码讲解专家，已为用户讲解过一组代码改动，请用简洁中文回答用户的追问，不要复述代码。', folder);
   const messages = [
     { role: 'system', content: system },
     { role: 'user', content: `${plan ? `${plan}\n\n` : ''}${ctx.context}\n\n请先理解这组改动。` },
@@ -939,7 +973,7 @@ async function reviewFollowUp({ folder, files, previousQA, question, runId = nul
   if (context.length > FOLLOWUP_CONTEXT_MAX_CHARS) {
     context = `${context.slice(0, FOLLOWUP_CONTEXT_MAX_CHARS)}\n（改动过多已截断）`;
   }
-  const system = '你是资深代码评审与讲解专家，已为用户评审/讲解过一批代码改动，请用简洁中文回答用户就这批改动的追问。';
+  const system = withProjectRules('你是资深代码评审与讲解专家，已为用户评审/讲解过一批代码改动，请用简洁中文回答用户就这批改动的追问。', folder);
   const messages = [
     { role: 'system', content: system },
     { role: 'user', content: `${plan ? `${plan}\n\n` : ''}${context}\n\n这是本次改动的 diff 与相关定义，请先理解。` },

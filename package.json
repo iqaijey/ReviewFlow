@@ -5,11 +5,15 @@
   "main": "main/main.js",
   "scripts": {
     "start": "electron .",
+    "test": "node --test tests/unit/",
+    "check": "node tests/check-syntax.mjs",
+    "smoke": "node tests/smoke.mjs",
     "pack": "rm -rf dist && electron-builder --mac --arm64 && mkdir -p dmgs && rm -f dmgs/*.dmg && cp dist/*.dmg dmgs/"
   },
   "devDependencies": {
     "electron": "^41.7.1",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "ws": "^8.21.3"
   },
   "build": {
     "appId": "com.yjq.autoreview",

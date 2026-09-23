@@ -284,4 +284,15 @@ async function fetchDesignFromUrl(url) {
   }
 }
 
-module.exports = { fetchPrdFromUrl, fetchDesignFromUrl };
+module.exports = {
+  fetchPrdFromUrl,
+  fetchDesignFromUrl,
+  // 以下为纯逻辑函数，导出供单元测试使用
+  assertHttpUrl,
+  looksLikeLoginWall,
+  looksLikeMojibake,
+  sanitizeFileName,
+  imageNameFromUrl,
+  decodeEntities,
+  fetchPrdFallback,
+};
