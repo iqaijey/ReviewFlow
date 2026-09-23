@@ -1,5 +1,5 @@
 // 需求方案：上传 PRD + 设计稿 → AI 生成技术方案，作为后续评审依据
-import { renderMarkdown } from '../markdown.js';
+import { renderMarkdown, extractH2Titles } from '../markdown.js';
 
 const BACKEND_LABELS = { api: 'API', opencode: 'OpenCode', kimi: 'Kimi CLI', codex: 'Codex' };
 
@@ -30,6 +30,114 @@ const readAsDataUrl = (file) => new Promise((resolve, reject) => {
   reader.onerror = () => reject(reader.error || new Error('读取图片失败'));
   reader.readAsDataURL(file);
 });
+
+// 向上找最近的可滚动祖先（overflowY auto/scroll），找不到返回 null（用视口）
+function findScrollParent(node) {
+  let cur = node && node.parentElement;
+  while (cur) {
+    const style = getComputedStyle(cur);
+    if (/(auto|scroll)/.test(style.overflowY)) return cur;
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
+// 方案阅读器：吸顶章节导航（二级标题 chips + 滚动高亮）+ 排版正文，
+// 生成结果区与历史卡片展开态共用。chips 复用 review-chip 视觉语言
+function renderPlanReader(el, mountNode, markdown) {
+  const reader = el('div', { class: 'plan-reader' });
+  const body = el('div', { class: 'md plan-reader-body' });
+  body.innerHTML = renderMarkdown(markdown);
+  const titles = extractH2Titles(markdown);
+  const headings = [...body.querySelectorAll('h2')];
+  const count = Math.min(titles.length, headings.length);
+  const chips = [];
+  let currentIdx = -1;
+  let lockIdx = -1;
+  let lockUntil = 0;
+  const setActive = (activeIdx) => {
+    if (activeIdx === currentIdx) return;
+    currentIdx = activeIdx;
+    chips.forEach((c, i) => c.classList.toggle('active', i === activeIdx));
+  };
+  // 无二级标题（或只有一节）时不显示导航，避免空条
+  if (count > 1) {
+    const nav = el('div', { class: 'plan-reader-nav' });
+    for (let idx = 0; idx < count; idx++) {
+      const chip = el('button', {
+        class: 'review-chip plan-reader-chip', type: 'button',
+      }, titles[idx]);
+      const target = headings[idx];
+      chip.addEventListener('click', () => {
+        setActive(idx); // 立即高亮，不等 IO
+        lockIdx = idx;
+        lockUntil = Date.now() + 900; // 平滑滚动期间锁定，防止 IO/兜底中途改高亮
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      nav.appendChild(chip);
+      chips.push(chip);
+    }
+    reader.appendChild(nav);
+  }
+  reader.appendChild(body);
+  mountNode.appendChild(reader);
+
+  if (count > 1) {
+    // IO 的 root 用章节内容的实际滚动祖先，rootMargin 相对它设窄带（顶部 10% ~ 20%）
+    const scroller = findScrollParent(reader);
+    const observer = new IntersectionObserver((entries) => {
+      if (!reader.isConnected) {
+        observer.disconnect();
+        return;
+      }
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        if (Date.now() < lockUntil) continue;
+        const idx = headings.indexOf(entry.target);
+        if (idx === -1 || idx >= count) continue;
+        setActive(idx);
+      }
+    }, { root: scroller, rootMargin: '-10% 0px -80% 0px' });
+    for (const h of headings.slice(0, count)) observer.observe(h);
+
+    // 兜底：滚动停止后若无 h2 命中窄带，取最后一个位于窄带顶部以上的 h2
+    const scrollTarget = scroller || window;
+    let scrollTimer = null;
+    const onScrollEnd = () => {
+      if (!reader.isConnected) return;
+      // 点击跳转期间保持点击目标，不被中途章节覆盖
+      if (Date.now() < lockUntil) { setActive(lockIdx); return; }
+      // 已滚到底（末章内容太短滚不进窄带）时直接高亮末章
+      const scrollTop = scroller ? scroller.scrollTop : window.scrollY;
+      const atBottom = scrollTop > 0 && (scroller
+        ? scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4
+        : window.innerHeight + window.scrollY >= document.body.scrollHeight - 4);
+      if (atBottom) { setActive(count - 1); return; }
+      const rootTop = scroller ? scroller.getBoundingClientRect().top : 0;
+      const rootH = scroller ? scroller.clientHeight : window.innerHeight;
+      const bandTop = rootTop + rootH * 0.1;
+      const bandBottom = rootTop + rootH * 0.2;
+      let inBand = false;
+      let fallback = -1;
+      for (let idx = 0; idx < count; idx++) {
+        const top = headings[idx].getBoundingClientRect().top;
+        if (top < bandTop) fallback = idx;
+        else if (top <= bandBottom) inBand = true;
+      }
+      if (!inBand && fallback >= 0) setActive(fallback);
+    };
+    const onScroll = () => {
+      if (!reader.isConnected) {
+        scrollTarget.removeEventListener('scroll', onScroll);
+        return;
+      }
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(onScrollEnd, 120);
+    };
+    scrollTarget.addEventListener('scroll', onScroll, { passive: true });
+  }
+  return reader;
+}
 
 export default {
   id: 'plan',
@@ -146,7 +254,7 @@ export default {
     container.appendChild(editor);
 
     const statusBox = el('div', { class: 'review-status' });
-    const resultBox = el('div', { class: 'md plan-result' });
+    const resultBox = el('div', { class: 'plan-result' });
     container.appendChild(statusBox);
     container.appendChild(resultBox);
 
@@ -304,12 +412,19 @@ export default {
       });
       actions.appendChild(activeBtn);
       actions.appendChild(editBtn);
+      if (detail.planMarkdown) {
+        const copyPlanBtn = el('button', { class: 'btn', type: 'button' }, '复制方案');
+        copyPlanBtn.addEventListener('click', () => {
+          navigator.clipboard.writeText(detail.planMarkdown)
+            .then(() => toast('已复制到剪贴板'))
+            .catch(() => { /* 剪贴板不可用时静默 */ });
+        });
+        actions.appendChild(copyPlanBtn);
+      }
       actions.appendChild(delBtn);
       body.appendChild(actions);
       if (detail.planMarkdown) {
-        const mdNode = el('div', { class: 'md' });
-        mdNode.innerHTML = renderMarkdown(detail.planMarkdown);
-        body.appendChild(mdNode);
+        renderPlanReader(el, body, detail.planMarkdown);
       } else {
         body.appendChild(el('div', { class: 'empty-hint' },
           '该方案尚未生成技术方案，可点击「载入编辑」后生成'));
@@ -556,7 +671,8 @@ export default {
           runId,
         });
         setStatus(null);
-        resultBox.innerHTML = renderMarkdown(markdown);
+        resultBox.textContent = '';
+        renderPlanReader(el, resultBox, markdown);
         resultBox.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
         const copyBtnEl = el('button', { class: 'btn', type: 'button' }, '复制');
         copyBtnEl.addEventListener('click', () => {

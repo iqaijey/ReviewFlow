@@ -5,6 +5,7 @@ const path = require('path');
 
 let renderMarkdown;
 let renderMarkdownPage;
+let extractH2Titles;
 
 before(async () => {
   // renderer 是原生 ESM，但 package.json 未声明 type:module，
@@ -13,6 +14,7 @@ before(async () => {
   const mod = await import('data:text/javascript;charset=utf-8,' + encodeURIComponent(src));
   renderMarkdown = mod.renderMarkdown;
   renderMarkdownPage = mod.renderMarkdownPage;
+  extractH2Titles = mod.extractH2Titles;
 });
 
 test('renderMarkdown 渲染标题', () => {
@@ -77,4 +79,33 @@ test('renderMarkdownPage 输出完整 HTML 文档并转义标题', () => {
   assert.ok(html.includes('<h1>标题&lt;X&gt;</h1>'));
   assert.ok(html.includes('<h2>内容</h2>'));
   assert.ok(html.includes('</html>'));
+});
+
+test('renderMarkdown 渲染一级标题', () => {
+  assert.strictEqual(renderMarkdown('# 一级'), '<h1>一级</h1>');
+});
+
+test('renderMarkdown 渲染表格', () => {
+  const html = renderMarkdown('| 名称 | 说明 |\n| --- | --- |\n| a | **b** |');
+  assert.strictEqual(
+    html,
+    '<div class="md-table-wrap"><table><thead><tr><th>名称</th><th>说明</th></tr></thead>' +
+    '<tbody><tr><td>a</td><td><strong>b</strong></td></tr></tbody></table></div>',
+  );
+});
+
+test('renderMarkdown 表格行不被并入前一段落', () => {
+  const html = renderMarkdown('前文\n| a |\n| --- |\n| b |');
+  assert.ok(html.startsWith('<p>前文</p>'));
+  assert.ok(html.includes('<table>'));
+});
+
+test('extractH2Titles 提取二级标题，跳过三级标题与代码块', () => {
+  const md = '## 需求理解\n### 小节\n```\n## 代码里的假标题\n```\n## 功能点拆解\n# 一级不算\n## 风险点';
+  assert.deepStrictEqual(extractH2Titles(md), ['需求理解', '功能点拆解', '风险点']);
+});
+
+test('extractH2Titles 空输入', () => {
+  assert.deepStrictEqual(extractH2Titles(''), []);
+  assert.deepStrictEqual(extractH2Titles(null), []);
 });

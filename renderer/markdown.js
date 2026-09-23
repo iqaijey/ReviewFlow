@@ -60,7 +60,33 @@ export function renderMarkdown(mdText) {
       continue;
     }
 
+    // 表格：表头行 + |---| 分隔行（单元格内不做列数严格对齐，缺列补空）
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length &&
+        /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      const splitRow = (row) => row.trim().replace(/^\|/, '').replace(/\|$/, '')
+        .split('|').map((c) => c.trim());
+      const headers = splitRow(line);
+      i += 2; // 跳过表头与分隔行
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        rows.push(splitRow(lines[i]));
+        i++;
+      }
+      let table = '<div class="md-table-wrap"><table><thead><tr>' +
+        headers.map((t) => '<th>' + renderInline(t) + '</th>').join('') +
+        '</tr></thead><tbody>';
+      for (const row of rows) {
+        table += '<tr>' +
+          headers.map((_, idx) => '<td>' + renderInline(row[idx] || '') + '</td>').join('') +
+          '</tr>';
+      }
+      html.push(table + '</tbody></table></div>');
+      continue;
+    }
+
     // 标题
+    const h1 = line.match(/^#\s+(.*)$/);
+    if (h1) { html.push('<h1>' + renderInline(h1[1]) + '</h1>'); i++; continue; }
     const h3 = line.match(/^###\s+(.*)$/);
     if (h3) { html.push('<h3>' + renderInline(h3[1]) + '</h3>'); i++; continue; }
     const h2 = line.match(/^##\s+(.*)$/);
@@ -109,10 +135,11 @@ export function renderMarkdown(mdText) {
       i < lines.length &&
       lines[i].trim() !== '' &&
       !lines[i].trimStart().startsWith('```') &&
-      !/^#{2,3}\s/.test(lines[i]) &&
+      !/^#{1,3}\s/.test(lines[i]) &&
       !/^&gt;\s?/.test(lines[i]) &&
       !/^\s*-\s+/.test(lines[i]) &&
-      !/^\s*\d+\.\s+/.test(lines[i])
+      !/^\s*\d+\.\s+/.test(lines[i]) &&
+      !/^\s*\|.*\|\s*$/.test(lines[i])
     ) {
       buf.push(lines[i]);
       i++;
@@ -121,4 +148,20 @@ export function renderMarkdown(mdText) {
   }
 
   return html.join('\n');
+}
+
+// 提取二级标题文本（跳过代码块），供章节导航使用
+export function extractH2Titles(mdText) {
+  const titles = [];
+  let inCode = false;
+  for (const line of String(mdText ?? '').split('\n')) {
+    if (line.trimStart().startsWith('```')) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) continue;
+    const m = line.match(/^##\s+(.*)$/);
+    if (m) titles.push(m[1].trim());
+  }
+  return titles;
 }

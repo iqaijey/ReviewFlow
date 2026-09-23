@@ -1598,3 +1598,101 @@ body {
   font-size: 11px;
   color: var(--text-dim);
 }
+
+/* ---------- 需求方案：方案阅读器（章节导航 + 排版） ---------- */
+.plan-reader { position: relative; }
+.plan-reader-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 2px;
+  margin-bottom: 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.plan-card-body .plan-reader-nav { background: var(--panel); }
+.plan-reader-chip.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(78, 201, 176, 0.08);
+}
+.plan-reader-body {
+  max-width: 860px;
+  font-size: 14px;
+  line-height: 1.75;
+}
+.plan-reader-body h1 {
+  margin: 24px 0 12px;
+  font-size: 20px;
+  font-weight: 600;
+  color: #fff;
+}
+.plan-reader-body h2 {
+  margin: 26px 0 12px;
+  padding: 2px 0 2px 10px;
+  font-size: 17px;
+  font-weight: 600;
+  border-left: 3px solid var(--accent);
+  border-bottom: none;
+  scroll-margin-top: 48px;
+}
+.plan-reader-body h3 {
+  margin: 18px 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.plan-reader-body p { margin: 10px 0; }
+.plan-reader-body ul, .plan-reader-body ol {
+  margin: 10px 0;
+  padding-left: 26px;
+}
+.plan-reader-body li { margin: 5px 0; }
+.plan-reader-body code {
+  padding: 1px 6px;
+  background: #2d2d2d;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.plan-reader-body pre {
+  padding: 12px 14px;
+  background: #1b1b1b;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.plan-reader-body pre code { padding: 0; background: none; }
+.plan-reader-body blockquote {
+  margin: 12px 0;
+  padding: 6px 14px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--panel);
+  color: var(--text-dim);
+}
+.plan-reader-body .md-table-wrap {
+  margin: 12px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.plan-reader-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.plan-reader-body th, .plan-reader-body td {
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.plan-reader-body thead th {
+  background: #2a2f37;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.plan-reader-body tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.03); }
+.plan-reader-body tbody tr:last-child td { border-bottom: none; }
