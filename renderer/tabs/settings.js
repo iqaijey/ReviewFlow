@@ -288,6 +288,123 @@ export default {
       '会追加到 AI 评审的系统指令中，对两种接入方式都生效'));
     form.appendChild(customPromptField);
 
+    // ---------- 评审预设 ----------
+    const MODEL_FIELD_BY_BACKEND = { api: 'model', opencode: 'opencodeModel', kimi: 'kimiModel', codex: 'codexModel' };
+    const modelRowByBackend = { api: modelRow, opencode: opencodeModelRow, kimi: kimiModelRow, codex: codexModelRow };
+    let cachedPresets = [];
+
+    const presetField = el('div', { class: 'settings-field' });
+    presetField.appendChild(el('label', { class: 'settings-label' }, '评审预设'));
+    const presetSaveRow = el('div', { class: 'preset-save-row' });
+    const presetNameInput = el('input', {
+      class: 'settings-input', type: 'text',
+      placeholder: '预设名称，如：安全审查', spellcheck: 'false',
+    });
+    const savePresetBtn = el('button', { class: 'btn', type: 'button' }, '把当前设置存为预设');
+    presetSaveRow.appendChild(presetNameInput);
+    presetSaveRow.appendChild(savePresetBtn);
+    presetField.appendChild(presetSaveRow);
+    const presetList = el('div', { class: 'preset-list' });
+    presetField.appendChild(presetList);
+    presetField.appendChild(el('div', { class: 'settings-hint' },
+      '预设记录当前的自定义维度、自定义评审要求、接入方式、模型与思考强度，仅保存在本机；可在多角度 Review 工具栏直接选用'));
+    form.appendChild(presetField);
+
+    const persistPresets = async (okText) => {
+      try {
+        await api.saveSettings({ presets: cachedPresets });
+        bus.dispatchEvent(new CustomEvent('settings:saved'));
+        if (okText) showMessage(okText, true);
+        return true;
+      } catch (err) {
+        showMessage(`预设保存失败：${errText(err)}`, false);
+        return false;
+      }
+    };
+
+    // 应用预设：写回设置并同步表单控件
+    const applyPreset = async (preset) => {
+      const patch = {};
+      const backend = MODEL_FIELD_BY_BACKEND[preset.backend] ? preset.backend : null;
+      if (backend) {
+        patch.backend = backend;
+        if (typeof preset.model === 'string') patch[MODEL_FIELD_BY_BACKEND[backend]] = preset.model;
+      }
+      if (typeof preset.effort === 'string') patch.reasoningEffort = preset.effort;
+      if (Array.isArray(preset.dimensions)) {
+        patch.customDimensions = preset.dimensions.map((d) => String(d || '').trim()).filter(Boolean).join('\n');
+      }
+      if (typeof preset.customPrompt === 'string') patch.customPrompt = preset.customPrompt;
+      try {
+        await api.saveSettings(patch);
+      } catch (err) {
+        showMessage(`应用预设失败：${errText(err)}`, false);
+        return;
+      }
+      if (backend) {
+        (radios[backend] || radios.api).checked = true;
+        syncBackendFields();
+        if (typeof preset.model === 'string') modelRowByBackend[backend].setValue(preset.model);
+      }
+      if (typeof preset.effort === 'string') effortSelect.value = preset.effort;
+      if (Array.isArray(preset.dimensions)) customDimensionsInput.value = patch.customDimensions;
+      if (typeof preset.customPrompt === 'string') customPromptInput.value = preset.customPrompt;
+      bus.dispatchEvent(new CustomEvent('settings:saved'));
+      showMessage(`已应用预设「${preset.name}」`, true);
+    };
+
+    const renderPresetList = () => {
+      presetList.textContent = '';
+      if (!cachedPresets.length) {
+        presetList.appendChild(el('div', { class: 'empty-hint' }, '暂无预设'));
+        return;
+      }
+      for (const preset of cachedPresets) {
+        const row = el('div', { class: 'preset-item' });
+        row.appendChild(el('span', { class: 'preset-name' }, preset.name || preset.id));
+        const meta = [
+          BACKENDS.find(([v]) => v === preset.backend)?.[1]?.trim(),
+          preset.model,
+          preset.effort ? `思考 ${preset.effort}` : '',
+        ].filter(Boolean).join(' · ');
+        if (meta) row.appendChild(el('span', { class: 'preset-meta' }, meta));
+        const applyBtn = el('button', { class: 'btn', type: 'button' }, '应用');
+        applyBtn.addEventListener('click', () => applyPreset(preset));
+        const delBtn = el('button', { class: 'btn', type: 'button' }, '删除');
+        delBtn.addEventListener('click', async () => {
+          cachedPresets = cachedPresets.filter((p) => p.id !== preset.id);
+          renderPresetList();
+          await persistPresets('预设已删除');
+        });
+        row.appendChild(applyBtn);
+        row.appendChild(delBtn);
+        presetList.appendChild(row);
+      }
+    };
+    renderPresetList();
+
+    savePresetBtn.addEventListener('click', async () => {
+      const name = presetNameInput.value.trim();
+      if (!name) {
+        showMessage('请先填写预设名称', false);
+        return;
+      }
+      const backend = currentBackend();
+      const preset = {
+        id: `p${Date.now().toString(36)}`,
+        name,
+        dimensions: customDimensionsInput.value.split('\n').map((t) => t.trim()).filter(Boolean),
+        customPrompt: customPromptInput.value.trim(),
+        backend,
+        model: modelRowByBackend[backend].getValue(),
+        effort: effortSelect.value,
+      };
+      cachedPresets = cachedPresets.concat([preset]);
+      presetNameInput.value = '';
+      renderPresetList();
+      await persistPresets(`预设「${name}」已保存`);
+    });
+
     // ---------- 操作区 ----------
     const actions = el('div', { class: 'settings-actions' });
     const saveBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '保存');
@@ -488,6 +605,9 @@ export default {
       codexModelRow.setValue(merged.codexModel || '');
       customPromptInput.value = merged.customPrompt || '';
       customDimensionsInput.value = merged.customDimensions || '';
+      cachedPresets = (Array.isArray(merged.presets) ? merged.presets : [])
+        .filter((p) => p && typeof p.id === 'string' && p.id);
+      renderPresetList();
       effortSelect.value = merged.reasoningEffort || '';
       timeoutInput.value = String(merged.timeoutMin || 10);
     }).catch(() => {

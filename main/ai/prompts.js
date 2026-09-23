@@ -187,6 +187,7 @@ function applyPromptOverride(cfg, customPromptOverride) {
 }
 
 module.exports = {
+  buildContext,
   fileToPromptText,
   overviewSectionsText,
   buildOverviewSystem,

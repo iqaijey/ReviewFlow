@@ -38,6 +38,36 @@ async function loadPlanContext(api, folder) {
 
 const pad = (n) => String(n).padStart(2, '0');
 
+// ---------- 问题清单解析 ----------
+// 提取 markdown 中指定标题的小节正文（到下一个同级或更高级标题为止），找不到返回 null
+function extractSection(markdown, title) {
+  const re = new RegExp(`(?:^|\\n)#{1,6}\\s*${title}[^\\n]*\\n([\\s\\S]*?)(?=\\n#{1,6}\\s|$)`, 'i');
+  const m = String(markdown || '').match(re);
+  return m ? m[1] : null;
+}
+
+// 解析「问题清单」节：逐条提取 `- [ ] 描述`；找不到小节或写「无」时返回空数组（容错，不报错）
+function parseIssueList(markdown) {
+  const body = extractSection(markdown, '问题清单');
+  if (!body) return [];
+  const items = [];
+  const re = /^\s*[-*]\s*\[[ xX]?\]\s*(.+?)\s*$/gm;
+  let m;
+  while ((m = re.exec(body))) items.push(m[1]);
+  return items;
+}
+
+// 解析「遗留问题核对」节：`旧问题描述 => 已修复 / 仍存在 / 部分修复（说明）`
+function parseLegacyCheck(markdown) {
+  const body = extractSection(markdown, '遗留问题核对');
+  if (!body) return [];
+  const items = [];
+  const re = /^\s*(?:[-*]\s*)?(.+?)\s*=>\s*(已修复|仍存在|部分修复)\s*(?:[（(](.*?)[）)])?\s*$/gm;
+  let m;
+  while ((m = re.exec(body))) items.push({ text: m[1].trim(), verdict: m[2], note: m[3] || '' });
+  return items;
+}
+
 // {backend, model, effort, promptTokens, completionTokens, durationMs}
 // → "API · k3-256k · 思考 high · 1,234 tokens · 12.3s"
 const BACKEND_LABELS = { api: 'API', opencode: 'OpenCode', kimi: 'Kimi CLI', codex: 'Codex' };
@@ -279,11 +309,21 @@ export default {
       String(raw || '').split('\n').map((t) => t.trim()).filter(Boolean);
     let cachedCustomDims = [];
     let activePlanTitle = '';
+    // 评审预设：'' 表示「（当前设置）」，选中预设后 dimensions/customPrompt 对本次评审生效
+    let cachedPresets = [];
+    let activePresetId = '';
+    const activePreset = () => cachedPresets.find((p) => p && p.id === activePresetId) || null;
+    const activeDims = () => {
+      const p = activePreset();
+      return p && Array.isArray(p.dimensions)
+        ? p.dimensions.map((d) => String(d || '').trim()).filter(Boolean)
+        : cachedCustomDims;
+    };
     const rebuildChips = () => {
       chips.textContent = '';
       const dims = activePlanTitle
-        ? DIMENSIONS.concat(cachedCustomDims, ['需求符合度'])
-        : DIMENSIONS.concat(cachedCustomDims);
+        ? DIMENSIONS.concat(activeDims(), ['需求符合度'])
+        : DIMENSIONS.concat(activeDims());
       for (const dim of dims) {
         const chip = el('button', { class: 'review-chip', type: 'button' }, dim);
         chip.addEventListener('click', () => {
@@ -294,11 +334,51 @@ export default {
       }
     };
     let cachedCustomPrompt = '';
+    const presetSelect = el('select', {
+      class: 'settings-input review-preset-select', title: '评审预设：在 AI 设置中管理',
+    });
+    const rebuildPresetOptions = () => {
+      presetSelect.textContent = '';
+      presetSelect.appendChild(el('option', { value: '', text: '（当前设置）' }));
+      for (const p of cachedPresets) {
+        presetSelect.appendChild(el('option', { value: p.id, text: p.name || p.id }));
+      }
+      presetSelect.value = activePresetId;
+      presetSelect.style.display = cachedPresets.length ? '' : 'none';
+    };
+    presetSelect.addEventListener('change', async () => {
+      activePresetId = presetSelect.value;
+      rebuildChips();
+      const preset = activePreset();
+      if (!preset) return;
+      // 应用预设的 AI 设置：backend 与思考强度写回设置，model 落到对应后端的字段
+      const patch = {};
+      const modelField = { api: 'model', opencode: 'opencodeModel', kimi: 'kimiModel', codex: 'codexModel' }[preset.backend];
+      if (modelField) {
+        patch.backend = preset.backend;
+        if (typeof preset.model === 'string') patch[modelField] = preset.model;
+      }
+      if (typeof preset.effort === 'string') patch.reasoningEffort = preset.effort;
+      if (!Object.keys(patch).length) return;
+      try {
+        await api.saveSettings(patch);
+        bus.dispatchEvent(new CustomEvent('settings:saved'));
+        if (toast) toast(`已应用预设「${preset.name}」`);
+      } catch (err) {
+        alert('应用预设失败：' + errText(err));
+      }
+    });
     const loadDimensions = () => {
       api.getSettings()
         .then((s) => {
           cachedCustomPrompt = (s && s.customPrompt) || '';
           cachedCustomDims = parseCustomDimensions(s && s.customDimensions);
+          cachedPresets = (Array.isArray(s && s.presets) ? s.presets : [])
+            .filter((p) => p && typeof p.id === 'string' && p.id);
+          if (activePresetId && !cachedPresets.some((p) => p.id === activePresetId)) {
+            activePresetId = '';
+          }
+          rebuildPresetOptions();
           rebuildChips();
         })
         .catch(() => {});
@@ -326,6 +406,7 @@ export default {
       planHint.appendChild(closeBtn);
     };
     rebuildChips();
+    rebuildPresetOptions();
     loadDimensions();
     refreshPlanHint();
     bus.addEventListener('settings:saved', loadDimensions);
@@ -335,14 +416,105 @@ export default {
       onClick: () => ctx.showRunDetails(),
     }, '运行详情');
     toolbar.appendChild(chips);
+    toolbar.appendChild(presetSelect);
     toolbar.appendChild(startBtn);
     toolbar.appendChild(runLink);
     overallPanel.appendChild(toolbar);
 
     const statusBox = el('div', { class: 'review-status' });
+    const checklistBox = el('div', { style: 'display:none' });
     const mdBox = el('div', { class: 'md review-result' });
     overallPanel.appendChild(statusBox);
+    overallPanel.appendChild(checklistBox);
     overallPanel.appendChild(mdBox);
+
+    // ---------- 问题清单（可勾选，三状态：待处理/已修复/不处理）----------
+    const CHECKLIST_STATUS_LABELS = { pending: '待处理', fixed: '已修复', wontfix: '不处理' };
+    const CHECKLIST_NEXT = { pending: 'fixed', fixed: 'wontfix', wontfix: 'pending' };
+    const checklistApiOk = typeof api.checklistList === 'function'
+      && typeof api.checklistSave === 'function'
+      && typeof api.checklistSetStatus === 'function';
+    let checklistItems = [];
+
+    const renderChecklist = () => {
+      checklistBox.textContent = '';
+      if (!checklistItems.length) {
+        checklistBox.style.display = 'none';
+        return;
+      }
+      checklistBox.style.display = '';
+      const pendingCount = checklistItems.filter((it) => it.status === 'pending').length;
+      const box = el('div', { class: 'review-checklist' });
+      box.appendChild(el('div', { class: 'review-checklist-title' },
+        `问题清单（${pendingCount} 条待处理，点击状态标签切换）`));
+      for (const item of checklistItems) {
+        const row = el('div', { class: `checklist-item checklist-${item.status}` });
+        const statusBtn = el('button', {
+          class: 'checklist-status', type: 'button', title: '点击切换：待处理 → 已修复 → 不处理',
+        }, CHECKLIST_STATUS_LABELS[item.status]);
+        statusBtn.addEventListener('click', async () => {
+          item.status = CHECKLIST_NEXT[item.status];
+          renderChecklist();
+          try {
+            await api.checklistSetStatus({ folder: state.folder, id: item.id, status: item.status });
+          } catch { /* 状态写盘失败不影响界面 */ }
+        });
+        row.appendChild(statusBtn);
+        row.appendChild(el('span', { class: 'checklist-text' }, item.text));
+        box.appendChild(row);
+      }
+      checklistBox.appendChild(box);
+    };
+
+    // 分析完成后：合并新解析的问题与历史清单（按文本匹配保留状态），
+    // 并应用「遗留问题核对」节中 AI 判定已修复的条目；解析不到清单节时不显示、不报错
+    const syncChecklist = async (markdown) => {
+      if (!checklistApiOk || !state.folder) return;
+      const issues = parseIssueList(markdown);
+      const legacy = parseLegacyCheck(markdown);
+      if (!issues.length && !legacy.length) {
+        checklistItems = [];
+        renderChecklist();
+        return;
+      }
+      let stored = [];
+      try {
+        stored = await api.checklistList(state.folder);
+      } catch { /* 读取失败按空清单处理 */ }
+      const byText = new Map(stored.map((it) => [it.text, it]));
+      const merged = [];
+      for (const text of issues) {
+        const existing = byText.get(text);
+        if (existing) {
+          merged.push(existing);
+        } else {
+          merged.push({
+            id: `i${Date.now().toString(36)}_${merged.length}`,
+            text, status: 'pending', createdAt: Date.now(),
+          });
+        }
+      }
+      // 本次清单未覆盖的历史条目保留（待处理条目会在下次分析时传给 AI 核对）
+      for (const it of stored) {
+        if (!merged.includes(it)) merged.push(it);
+      }
+      let fixedCount = 0;
+      for (const entry of legacy) {
+        if (entry.verdict !== '已修复') continue;
+        const target = merged.find((it) => it.status === 'pending'
+          && (it.text === entry.text || it.text.includes(entry.text) || entry.text.includes(it.text)));
+        if (target) {
+          target.status = 'fixed';
+          fixedCount += 1;
+        }
+      }
+      checklistItems = merged;
+      renderChecklist();
+      try {
+        await api.checklistSave({ folder: state.folder, items: merged });
+      } catch { /* 清单写盘失败不影响结果展示 */ }
+      if (fixedCount && toast) toast(`${fixedCount} 条遗留问题已确认修复`);
+    };
 
     // 在已渲染的 markdown 中按标题文字定位小节
     const findSection = (dim) => {
@@ -382,7 +554,7 @@ export default {
         class: 'settings-input', type: 'text',
         placeholder: '临时自定义要求，可留空', spellcheck: 'false',
       });
-      promptInput.value = cachedCustomPrompt;
+      promptInput.value = (activePreset() && activePreset().customPrompt) || cachedCustomPrompt;
       const rerunBtn = el('button', { class: 'btn', type: 'button' }, '按此重跑');
       rerunBtn.addEventListener('click', () => runAnalysis(promptInput.value));
       promptInput.addEventListener('keydown', (ev) => {
@@ -402,6 +574,8 @@ export default {
       runSeq++;
       startBtn.disabled = true;
       mdBox.textContent = '';
+      checklistItems = [];
+      renderChecklist();
       setStatus(loadingNode());
       // API 后端流式输出：增量文本先以纯文本预览，结束后替换为渲染好的 markdown
       const runId = `run-${Date.now()}`;
@@ -419,12 +593,32 @@ export default {
           files: state.changes.files,
           runId,
         };
+        const preset = activePreset();
         if (override) payload.customPromptOverride = override;
+        else if (preset && typeof preset.customPrompt === 'string' && preset.customPrompt.trim()) {
+          payload.customPromptOverride = preset.customPrompt;
+        }
+        if (preset && Array.isArray(preset.dimensions)) {
+          const dims = preset.dimensions.map((d) => String(d || '').trim()).filter(Boolean);
+          if (dims.length) payload.customDimensionsOverride = dims.join('\n');
+        }
+        // 上次清单中仍为「待处理」的条目传给 AI 做遗留核对；清单不可用时静默跳过
+        if (checklistApiOk && state.folder) {
+          try {
+            const items = await api.checklistList(state.folder);
+            const pendingTexts = (Array.isArray(items) ? items : [])
+              .filter((it) => it && it.status === 'pending' && it.text)
+              .map((it) => it.text);
+            if (pendingTexts.length) payload.pendingIssues = pendingTexts;
+          } catch { /* 清单读取失败不阻断分析 */ }
+        }
         const plan = await loadPlanContext(api, state.folder);
         if (plan) payload.planContext = plan.section;
         const { markdown, stats } = await api.analyzeOverview(payload);
         setStatus(null);
         mdBox.innerHTML = renderMarkdown(markdown);
+        // 清单解析/写盘失败不影响评审结果展示
+        try { await syncChecklist(markdown); } catch { /* 忽略 */ }
         mdBox.appendChild(statsLine(stats));
         mdBox.appendChild(exportGroup(markdown));
         const followUp = buildFollowUp(markdown);

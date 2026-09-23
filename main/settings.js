@@ -15,6 +15,8 @@ const DEFAULTS = {
   reasoningEffort: '',
   timeoutMin: 10,
   overviewWidth: 0,
+  // 评审预设：[{id, name, dimensions[], customPrompt, backend, model, effort}]
+  presets: [],
 };
 
 function settingsPath() {

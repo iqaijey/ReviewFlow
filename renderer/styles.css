@@ -1696,3 +1696,47 @@ body {
 }
 .plan-reader-body tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.03); }
 .plan-reader-body tbody tr:last-child td { border-bottom: none; }
+
+/* ---------- 多角度 Review：预设下拉与问题清单 ---------- */
+.review-preset-select { width: auto; min-width: 130px; padding: 4px 8px; font-size: 12px; flex-shrink: 0; }
+.review-checklist {
+  margin: 10px 16px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.review-checklist-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.checklist-item { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: 13px; }
+.checklist-status {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.checklist-pending .checklist-status { color: #d29922; border-color: #d29922; }
+.checklist-fixed .checklist-status { color: #3fb950; border-color: #3fb950; }
+.checklist-fixed .checklist-text { text-decoration: line-through; color: var(--text-dim); }
+.checklist-wontfix .checklist-text { color: var(--text-dim); opacity: 0.6; }
+.checklist-text { line-height: 1.5; }
+
+/* ---------- AI 设置：评审预设管理 ---------- */
+.preset-save-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.preset-save-row .settings-input { flex: 1; width: auto; }
+.preset-save-row .btn { flex-shrink: 0; }
+.preset-list { display: flex; flex-direction: column; gap: 6px; }
+.preset-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.preset-name { font-size: 13px; }
+.preset-meta { flex: 1; font-size: 12px; color: var(--text-dim); }

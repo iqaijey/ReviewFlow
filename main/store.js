@@ -61,4 +61,50 @@ function addRecentProject(folder) {
   return trimmed;
 }
 
-module.exports = { saveReview, listReviews, getRecentProjects, addRecentProject };
+// ---------- 评审问题清单（review-checklist.json，按 folder 存）----------
+const CHECKLIST_STATUSES = ['pending', 'fixed', 'wontfix'];
+
+function normalizeChecklistItem(item) {
+  if (!item || typeof item.text !== 'string' || !item.text.trim()) return null;
+  return {
+    id: typeof item.id === 'string' && item.id ? item.id : `i${Date.now().toString(36)}`,
+    text: item.text.trim(),
+    status: CHECKLIST_STATUSES.includes(item.status) ? item.status : 'pending',
+    createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
+  };
+}
+
+function listChecklist(folder) {
+  const all = readJson(storeFile('review-checklist.json'), {});
+  const list = Array.isArray(all[folder]) ? all[folder] : [];
+  return list.map(normalizeChecklistItem).filter(Boolean);
+}
+
+// 整体替换某 folder 的清单（分析完成后用新解析结果合并回写）
+function saveChecklist(folder, items) {
+  if (!folder || typeof folder !== 'string') throw new Error('保存清单失败：缺少项目路径');
+  const file = storeFile('review-checklist.json');
+  const all = readJson(file, {});
+  const list = (Array.isArray(items) ? items : []).map(normalizeChecklistItem).filter(Boolean);
+  all[folder] = list.slice(0, 200);
+  writeJson(file, all);
+  return all[folder];
+}
+
+function setChecklistStatus({ folder, id, status }) {
+  if (!folder || typeof folder !== 'string') throw new Error('更新清单失败：缺少项目路径');
+  if (!CHECKLIST_STATUSES.includes(status)) throw new Error('无效的清单状态');
+  const file = storeFile('review-checklist.json');
+  const all = readJson(file, {});
+  const list = Array.isArray(all[folder]) ? all[folder] : [];
+  const item = list.find((it) => it && it.id === id);
+  if (!item) throw new Error('清单条目不存在');
+  item.status = status;
+  writeJson(file, all);
+  return listChecklist(folder);
+}
+
+module.exports = {
+  saveReview, listReviews, getRecentProjects, addRecentProject,
+  listChecklist, saveChecklist, setChecklistStatus,
+};

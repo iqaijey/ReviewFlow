@@ -1,8 +1,10 @@
-// 冒烟测试：临时 git 仓库 + 真实 Electron + CDP 黑盒断言，全程不触发 AI 调用
+// 冒烟测试：临时 git 仓库 + 真实 Electron + CDP 黑盒断言
+// AI 调用全部打到本地 mock SSE 服务（127.0.0.1 随机端口），不访问真实模型服务
 // 运行：npm run smoke（需要本机完整 node_modules，不适合 CI）
 import { spawn, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,6 +101,10 @@ const userData = path.join(os.homedir(), 'Library', 'Application Support', 'auto
 const folderHash = crypto.createHash('sha1').update(repo).digest('hex').slice(0, 16);
 const plansHashDir = path.join(userData, 'plans', folderHash);
 
+// 用户真实设置文件：冒烟会临时写入（customPrompt 往返 + 切 mock 后端），启动前快照原始字节，结束恢复
+const settingsFile = path.join(userData, 'settings.json');
+const origSettingsRaw = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile, 'utf8') : null;
+
 // ---------- CDP 客户端 ----------
 class Cdp {
   constructor(wsUrl) {
@@ -158,6 +164,59 @@ let child = null;
 let childExited = false;
 let childLog = '';
 let origPlanReviewEnabled = null;
+let origSettings = null;
+let settingsTouched = false;
+let mockServer = null;
+const mockSockets = new Set();
+
+// mock SSE 行为：每批吐 sseCfg.chunks 段、间隔 sseCfg.delayMs 毫秒（暂停用慢速，导出用快速）
+const sseCfg = { chunks: 30, delayMs: 150 };
+
+// OpenAI 兼容 SSE mock：慢慢吐 data: 行，客户端中断（cancelRun abort）时停止发送
+function startMockServer() {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      if (req.method !== 'POST' || !String(req.url).includes('/chat/completions')) {
+        res.writeHead(404);
+        res.end('not found');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      let sent = 0;
+      const timer = setInterval(() => {
+        if (res.writableEnded || res.destroyed) {
+          clearInterval(timer);
+          return;
+        }
+        sent += 1;
+        try {
+          const chunk = { choices: [{ delta: { content: `mock 第 ${sent} 段评审输出。\n` } }] };
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          if (sent >= sseCfg.chunks) {
+            clearInterval(timer);
+            res.write('data: [DONE]\n\n');
+            res.end();
+          }
+        } catch {
+          clearInterval(timer);
+        }
+      }, sseCfg.delayMs);
+      const stop = () => clearInterval(timer);
+      req.on('close', stop);
+      res.on('close', stop);
+    });
+    server.on('connection', (socket) => {
+      mockSockets.add(socket);
+      socket.on('close', () => mockSockets.delete(socket));
+    });
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
 
 async function waitFor(expr, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
@@ -215,6 +274,29 @@ async function cleanup() {
   if (child && !childExited) {
     try {
       process.kill(-child.pid, 'SIGKILL');
+    } catch { /* 忽略 */ }
+  }
+  // 恢复用户真实设置文件（冒烟期间写入过标志性 customPrompt 并切到 mock 后端）
+  if (settingsTouched) {
+    try {
+      if (origSettingsRaw === null) fs.rmSync(settingsFile, { force: true });
+      else fs.writeFileSync(settingsFile, origSettingsRaw, 'utf8');
+    } catch { /* 忽略 */ }
+  }
+  // 清掉本次运行写入的评审历史（按临时仓库路径）
+  try {
+    const histFile = path.join(userData, 'review-history.json');
+    const all = JSON.parse(fs.readFileSync(histFile, 'utf8'));
+    if (all && typeof all === 'object' && Object.prototype.hasOwnProperty.call(all, repo)) {
+      delete all[repo];
+      fs.writeFileSync(histFile, JSON.stringify(all, null, 2), 'utf8');
+    }
+  } catch { /* 忽略 */ }
+  // 关闭 mock SSE 服务（先销毁 keep-alive 连接）
+  if (mockServer) {
+    try {
+      for (const socket of mockSockets) socket.destroy();
+      mockServer.close();
     } catch { /* 忽略 */ }
   }
   try {
@@ -359,6 +441,120 @@ async function main() {
     `.some((c) => c.textContent.trim() === '需求符合度')`,
   );
   check('多角度 Review 出现「需求符合度」chip', chipOk);
+
+  // ---------- 扩面①：设置保存往返（操作用户真实设置文件，cleanup 里按原始字节恢复） ----------
+  origSettings = await cdp.eval('window.autoReview.getSettings()');
+  check('读取当前设置（getSettings 返回对象）', !!(origSettings && typeof origSettings === 'object'));
+  const marker = `smoke-marker-${Date.now()}`;
+  await cdp.eval(`window.autoReview.saveSettings(${JSON.stringify({ customPrompt: marker })})`);
+  settingsTouched = true;
+  const reread = await cdp.eval('window.autoReview.getSettings()');
+  check('设置保存往返：saveSettings 写入标志性 customPrompt 后读回一致',
+    !!(reread && reread.customPrompt === marker), `实际：${reread && reread.customPrompt}`);
+  const origPrompt = (origSettings && origSettings.customPrompt) || '';
+  await cdp.eval(`window.autoReview.saveSettings(${JSON.stringify({ customPrompt: origPrompt })})`);
+  const restored = await cdp.eval('window.autoReview.getSettings()');
+  check('设置保存往返：恢复原始 customPrompt',
+    !!(restored && restored.customPrompt === origPrompt), `实际：${restored && restored.customPrompt}`);
+
+  // ---------- 扩面②：暂停/继续/终止（本地 mock SSE + 临时切 api 后端） ----------
+  mockServer = await startMockServer();
+  const mockPort = mockServer.address().port;
+  check('本地 mock SSE 服务启动（127.0.0.1 随机端口）', mockPort > 0);
+  const mockSettings = {
+    backend: 'api',
+    baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+    apiKey: 'smoke-fake-key',
+    model: 'smoke-model',
+    reasoningEffort: '',
+  };
+  await cdp.eval(`window.autoReview.saveSettings(${JSON.stringify(mockSettings)})`);
+
+  // 追加一个大文件改动并重新扫描，使整体分析分成多批（暂停只在批间生效）
+  const bigLines = [];
+  for (let i = 0; i < 260; i += 1) {
+    bigLines.push(`export const bigConst${i} = 'smoke-padding-value-${i}-aaaaaaaaaaaaaaaaaaaa';`);
+  }
+  fs.writeFileSync(path.join(repo, 'src', 'bigModule.js'), `${bigLines.join('\n')}\n`);
+  await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', metaKey: true }))`);
+  const rescanned = await waitFor(
+    `document.querySelectorAll('.tab-panel[data-tab-id="overview"] .file-item').length >= 4`,
+    15_000,
+  );
+  check('新增大文件后重新扫描（改动 ≥4 个文件，整体分析将分批）', rescanned);
+  if (!rescanned) throw new Error('重新扫描失败，终止后续断言');
+
+  // 自建 chunk 计数器：渲染进程自己的监听在每次分析结束后会注销，续跑 chunk 只能靠它观察
+  await cdp.eval(`window.__smokeChunks = { count: 0, text: '' };
+window.__smokeUnsub = window.autoReview.onAiChunk(({ text }) => {
+  if (typeof text === 'string' && text.length) {
+    window.__smokeChunks.count += 1;
+    window.__smokeChunks.text = text;
+  }
+});
+'ok'`);
+  await cdp.eval(`document.querySelector('.tab-panel[data-tab-id="review"] .btn.btn-primary').click()`);
+
+  const firstChunk = await waitFor('window.__smokeChunks && window.__smokeChunks.count > 0', 20_000);
+  check('mock SSE 流式输出到达（第一批文本出现）', firstChunk);
+  if (!firstChunk) throw new Error('流式输出未到达，终止后续断言');
+  const curRun = await cdp.eval('window.autoReview.getCurrentRun()');
+  check('getCurrentRun 显示运行中（整体分析批次）',
+    !!(curRun && !curRun.paused && curRun.kind === '整体分析'), `实际：${JSON.stringify(curRun)}`);
+
+  const pauseAccepted = await cdp.eval('window.autoReview.pauseRun()');
+  const pausedRun = await waitFor(
+    'window.autoReview.getCurrentRun().then((r) => !!(r && r.paused))', 20_000);
+  check('pauseRun 后进入暂停态（getCurrentRun.paused）', !!(pauseAccepted && pausedRun),
+    `pauseAccepted=${pauseAccepted} paused=${pausedRun}`);
+  if (!pausedRun) throw new Error('暂停未生效，终止后续断言');
+  const pausedHint = await cdp.eval(
+    `document.querySelector('.tab-panel[data-tab-id="review"]').innerText.includes('已暂停')`);
+  check('暂停后界面提示「已暂停」', !!pausedHint);
+  const countAtPause = await cdp.eval('window.__smokeChunks.count');
+  await sleep(1500);
+  const countAfterWait = await cdp.eval('window.__smokeChunks.count');
+  check('暂停后流式文本停止增长', countAtPause === countAfterWait,
+    `chunk 数 ${countAtPause} → ${countAfterWait}`);
+
+  await cdp.eval(`window.__smokeResume = window.autoReview.resumeRun()
+  .then(() => ({ ok: true }), (err) => ({ ok: false, msg: String((err && err.message) || err) }));
+'ok'`);
+  const grewAfterResume = await waitFor(`window.__smokeChunks.count > ${countAfterWait}`, 20_000);
+  check('resumeRun 后文本继续增长', grewAfterResume);
+  if (!grewAfterResume) throw new Error('继续运行无输出，终止后续断言');
+  const cancelAccepted = await cdp.eval('window.autoReview.cancelRun()');
+  const resumeResult = await cdp.eval('window.__smokeResume');
+  check('cancelRun 终止运行并报「已被用户终止」',
+    !!(cancelAccepted && resumeResult && resumeResult.ok === false
+      && resumeResult.msg.includes('已被用户终止')),
+    `cancelAccepted=${cancelAccepted} 结果：${JSON.stringify(resumeResult)}`);
+  let alive = false;
+  try {
+    alive = (await cdp.eval('document.readyState')) === 'complete';
+  } catch { /* 渲染进程崩溃 */ }
+  check('终止后渲染进程未崩溃', alive);
+  await cdp.eval(`window.__smokeUnsub && window.__smokeUnsub(); 'ok'`);
+
+  // ---------- 扩面③：导出 HTML（原生保存对话框自动化够不到，验证结果渲染与导出按钮可用） ----------
+  sseCfg.chunks = 8;
+  sseCfg.delayMs = 25;
+  await cdp.eval(`document.querySelector('.tab-panel[data-tab-id="review"] .btn.btn-primary').click()`);
+  const exportReady = await waitFor(
+    `document.querySelectorAll('.tab-panel[data-tab-id="review"] .export-group').length >= 1`,
+    30_000,
+  );
+  const exportBtns = exportReady
+    ? await cdp.eval(
+        `[...document.querySelectorAll('.tab-panel[data-tab-id="review"] .export-group button')]` +
+        `.map((b) => b.textContent.trim() + (b.disabled ? ':disabled' : '')).join('|')`,
+      )
+    : '';
+  check('分析完成后导出按钮齐全且可点击（导出 Markdown/复制/导出 HTML）',
+    exportBtns === '导出 Markdown|复制|导出 HTML', `实际：${exportBtns || '（无导出按钮）'}`);
+  const resultHtml = await cdp.eval(
+    `(document.querySelector('.tab-panel[data-tab-id="review"] .review-result') || {}).innerHTML`);
+  check('评审结果已渲染为 HTML（导出内容来源非空）', !!(resultHtml && resultHtml.length > 0));
 }
 
 const watchdog = setTimeout(() => {

@@ -170,11 +170,22 @@ async function listModels(settings) {
   return [...new Set(ids)].sort();
 }
 
+// 问题清单闭环：整体分析固定追加的分节要求，渲染进程据此解析为可勾选清单；
+// 有遗留问题时再追加核对节。定义在编排层（本文件），不改 prompts.js 的分节逻辑
+const ISSUE_LIST_SECTION =
+  '最后必须追加一节 ## 问题清单：把本次评审发现的可执行问题逐条列出，' +
+  '格式严格为 `- [ ] 问题描述（一句话，含文件/位置）`，没有问题就写「无」。';
+const LEGACY_CHECK_SECTION =
+  '再追加一节 ## 遗留问题核对：对照当前 diff 逐条核对上次遗留问题，' +
+  '每条输出 `旧问题描述 => 已修复 / 仍存在 / 部分修复（一句话说明）`。';
+
 // 整体分析分批循环：每批开始前检查暂停请求，暂停时保存续跑状态并返回已完成部分；
 // 正常跑完后多批结果再综合（续跑走到这里同样执行综合）
 async function runOverviewBatches(cfg, state) {
   const { folder, batches, system, runId } = state;
   const planPrefix = state.planContext ? `${state.planContext}\n\n` : '';
+  // 遗留问题清单放在用户消息开头，让各批与综合都能看到
+  const pendingPrefix = state.pendingText ? `${state.pendingText}\n\n` : '';
   for (let i = state.nextIndex; i < batches.length; i += 1) {
     if (runState.pauseRequested) {
       runState.pauseRequested = false;
@@ -188,7 +199,7 @@ async function runOverviewBatches(cfg, state) {
       };
     }
     const label = batches.length > 1 ? `（第 ${i + 1}/${batches.length} 批）` : '';
-    const user = `${planPrefix}以下是本次未提交的代码改动${label}（unified diff），请进行多角度评审：\n\n${batches[i].join('\n\n')}`;
+    const user = `${pendingPrefix}${planPrefix}以下是本次未提交的代码改动${label}（unified diff），请进行多角度评审：\n\n${batches[i].join('\n\n')}`;
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -207,12 +218,13 @@ async function runOverviewBatches(cfg, state) {
     if (combined.length > 12000) combined = `${combined.slice(0, 12000)}\n(内容过长已截断)`;
     const synthSystem = withProjectRules(withCustomPrompt(
       '你是一位资深代码评审专家。以下是针对同一批代码改动分批评审得到的多份评审结果，' +
-      `请将它们去重、合并为一份完整评审，仍${overviewSectionsText(cfg, Boolean(state.planContext))}`,
+      `请将它们去重、合并为一份完整评审，仍${overviewSectionsText(cfg, Boolean(state.planContext))}\n` +
+      (state.pendingText ? `${ISSUE_LIST_SECTION}\n${LEGACY_CHECK_SECTION}` : ISSUE_LIST_SECTION),
       cfg,
     ), state.folder);
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: synthSystem },
-      { role: 'user', content: `${planPrefix}${combined}` },
+      { role: 'user', content: `${pendingPrefix}${planPrefix}${combined}` },
     ], { maxTokens: 4096, folder, kind: '整体分析', batch: '（综合结果）', batchIndex: batches.length, batchTotal: batches.length, runId, stream: true });
     markdown = content;
     state.statsList.push(stats);
@@ -223,19 +235,34 @@ async function runOverviewBatches(cfg, state) {
   return { markdown, stats: aggregateStats(state.statsList), paused: false };
 }
 
-async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '', planContext = '' }) {
+async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '', planContext = '', pendingIssues = [], customDimensionsOverride = '' }) {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可分析的改动');
   }
-  const cfg = applyPromptOverride(await getSettings(), customPromptOverride);
+  let cfg = applyPromptOverride(await getSettings(), customPromptOverride);
+  // 评审预设：本次生效的自定义维度覆盖（不写回设置）
+  if (typeof customDimensionsOverride === 'string' && customDimensionsOverride.trim()) {
+    cfg = { ...cfg, customDimensions: customDimensionsOverride };
+  }
   const plan = normalizePlanContext(planContext);
+  // 上次未关闭的问题：非空时要求 AI 追加「遗留问题核对」节
+  const pending = (Array.isArray(pendingIssues) ? pendingIssues : [])
+    .map((t) => String(t || '').trim())
+    .filter(Boolean)
+    .slice(0, 50);
+  const issueSuffix = pending.length
+    ? `\n${ISSUE_LIST_SECTION}\n${LEGACY_CHECK_SECTION}`
+    : `\n${ISSUE_LIST_SECTION}`;
   const { batches, reviewed } = splitIntoBatches(folder, files);
   const state = {
     kind: 'overview',
     folder,
     files,
-    system: withProjectRules(withCustomPrompt(buildOverviewSystem(cfg, Boolean(plan)), cfg), folder),
+    system: withProjectRules(withCustomPrompt(buildOverviewSystem(cfg, Boolean(plan)), cfg), folder) + issueSuffix,
     planContext: plan,
+    pendingText: pending.length
+      ? `上次评审遗留的待处理问题（请在「遗留问题核对」节逐条核对当前 diff 是否已修复）：\n${pending.map((t, i) => `${i + 1}. ${t}`).join('\n')}`
+      : '',
     batchResults: [],
     statsList: [],
     nextIndex: 0,

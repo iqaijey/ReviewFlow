@@ -267,6 +267,22 @@ function registerIpcHandlers() {
     return store.listReviews(folder);
   });
 
+  ipcMain.handle('checklist:list', async (_event, folder) => {
+    return store.listChecklist(folder);
+  });
+
+  ipcMain.handle('checklist:save', async (_event, payload) => {
+    return store.saveChecklist(payload && payload.folder, payload && payload.items);
+  });
+
+  ipcMain.handle('checklist:setStatus', async (_event, payload) => {
+    try {
+      return store.setChecklistStatus(payload);
+    } catch (err) {
+      throw new Error(`更新清单状态失败：${err.message}`);
+    }
+  });
+
   ipcMain.handle('review:export', async (_event, payload) => {
     const ext = payload && payload.ext === 'html' ? 'html' : 'md';
     // 兼容旧字段 markdown 兜底
