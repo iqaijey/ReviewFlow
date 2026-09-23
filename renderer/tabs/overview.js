@@ -77,8 +77,10 @@ export default {
     let collapsed = new Set(); // 折叠的 hunk，key = `${file.path}#${hunkIndex}`
     let knownFolder = null;
     let searchQuery = '';
+    /** @type {HTMLElement | null} */
     let readStatEl = null;
     let branchInfo = { current: '', branches: [] };
+    /** @type {any} */
     let lastDiffFile = null; // 上次渲染 diff 的文件，用于重渲染时恢复滚动与选中行
     let lastDiffRows = [];
 
@@ -371,6 +373,7 @@ export default {
       diffView.querySelectorAll('.diff-line.line-match')
         .forEach((n) => n.classList.remove('line-match'));
       if (!searchQuery) return;
+      /** @type {Element | null} */
       let first = null;
       for (const content of diffView.querySelectorAll('.diff-line .line-content')) {
         if (!content.textContent.toLowerCase().includes(searchQuery)) continue;
@@ -461,6 +464,7 @@ export default {
       // 按 path 判断，changes:loaded 后 file 对象已换新但仍是同一文件
       const sameFile = lastDiffFile != null && lastDiffFile.path === file.path;
       const savedScroll = sameFile ? diffView.scrollTop : 0;
+      /** @type {number | null} */
       let savedPos = null;
       if (sameFile) {
         const idx = lastDiffRows.findIndex((r) => r.row.classList.contains('line-selected'));
@@ -555,6 +559,7 @@ export default {
         bus.dispatchEvent(new CustomEvent('line:select', { detail }));
       };
 
+      /** @type {{ start: number, end: number, alt: boolean } | null} */
       let drag = null;
       clickableRows.forEach((r, pos) => {
         r.row.addEventListener('mousedown', (ev) => {

@@ -18,6 +18,11 @@ const {
 } = require('./ai/prompts');
 const { normalizePlanContext, withProjectRules, imageMime } = require('./ai/planContext');
 
+/**
+ * @param {any} settings
+ * @param {any} messages
+ * @param {{ maxTokens?: number, temperature?: number, folder?: string | null, kind?: string, batch?: string, batchIndex?: number | null, batchTotal?: number | null, runId?: string | null, stream?: boolean }} [options]
+ */
 async function chatWithStats(settings, messages, { maxTokens = 1024, temperature = 0.2, folder = null, kind = 'AI 调用', batch = '', batchIndex = null, batchTotal = null, runId = null, stream = false } = {}) {
   const cfg = settings || (await getSettings());
   const startedAt = Date.now();
@@ -163,7 +168,7 @@ async function listModels(settings) {
     const detail = (await resp.text()).slice(0, 300);
     throw new Error(`拉取模型列表失败 (${resp.status}): ${detail || resp.statusText}`);
   }
-  const data = await resp.json();
+  const data = /** @type {any} */ (await resp.json());
   const ids = (Array.isArray(data.data) ? data.data : [])
     .map((m) => m && m.id)
     .filter((id) => typeof id === 'string' && id);
@@ -436,6 +441,11 @@ async function reviewFollowUp({ folder, files, previousQA, question, runId = nul
 
 // 需求方案生成：API 后端走 OpenAI 兼容多模态消息（base64 data URL），
 // CLI 后端（opencode/kimi/codex）在 prompt 中给出图片绝对路径，由 CLI 自行读取
+/**
+ * @param {{ prdText?: string, prdFileName?: string, imagePaths?: string[], extraRequirement?: string }} [payload]
+ * @param {any} [settings]
+ * @param {{ runId?: string | null, folder?: string | null }} [opts]
+ */
 async function generatePlan({ prdText, prdFileName, imagePaths = [], extraRequirement = '' } = {}, settings, { runId = null, folder = null } = {}) {
   if (!prdText || !String(prdText).trim()) throw new Error('缺少 PRD 内容');
   const cfg = settings || (await getSettings());
@@ -457,6 +467,7 @@ async function generatePlan({ prdText, prdFileName, imagePaths = [], extraRequir
     return { markdown: content, stats };
   }
   const text = `${prdSection}${extra}\n\n请基于以上需求文档${images.length ? '与设计稿图片' : ''}输出技术方案。`;
+  /** @type {Array<{ type: string, text: string } | { type: string, image_url: { url: string } }>} */
   const parts = [{ type: 'text', text }];
   for (const p of images) {
     try {

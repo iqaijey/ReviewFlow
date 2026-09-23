@@ -27,6 +27,7 @@ const PLAN_PRD_EXCERPT_CHARS = 500;
 async function loadPlanContext(api, folder) {
   if (!folder || localStorage.getItem('planReviewEnabled') === '0') return null;
   if (typeof api.getActivePlan !== 'function') return null;
+  /** @type {any} */
   let plan = null;
   try {
     plan = await api.getActivePlan(folder);

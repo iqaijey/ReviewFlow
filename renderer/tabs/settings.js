@@ -496,6 +496,7 @@ export default {
       }).catch(() => {});
     }
 
+    /** @type {(() => void) | null} */
     let offProgress = null;
     const setProgress = (percent, bar, label) => {
       bar.style.width = `${percent}%`;

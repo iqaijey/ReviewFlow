@@ -93,7 +93,7 @@ async function chatViaApi(cfg, messages, { maxTokens, temperature, stream, runId
       const { content, usage } = await readSseStream(resp, runId);
       return { content, usage, appliedEffort };
     }
-    const data = await resp.json();
+    const data = /** @type {any} */ (await resp.json());
     const content = data && data.choices && data.choices[0] && data.choices[0].message
       ? data.choices[0].message.content
       : null;

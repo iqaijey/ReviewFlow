@@ -85,6 +85,7 @@ function createWindow() {
     },
   });
 
+  /** @type {ReturnType<typeof setTimeout> | null} */
   let stateTimer = null;
   const scheduleStateSave = () => {
     if (stateTimer) clearTimeout(stateTimer);
@@ -107,7 +108,9 @@ function createWindow() {
   win.on('closed', () => stopWatcher());
 }
 
+/** @type {fs.FSWatcher | null} */
 let watcher = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
 let watcherTimer = null;
 
 function stopWatcher() {

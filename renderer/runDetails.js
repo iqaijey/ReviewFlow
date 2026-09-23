@@ -3,7 +3,9 @@ const BACKEND_LABELS = { api: 'API', opencode: 'OpenCode', kimi: 'Kimi CLI', cod
 
 export function createRunDetails(ctx) {
   const { el, api } = ctx;
+  /** @type {HTMLElement | null} */
   let overlay = null;
+  /** @type {ReturnType<typeof setInterval> | null} */
   let timer = null;
 
   const close = () => {
@@ -29,7 +31,9 @@ export function createRunDetails(ctx) {
       close();
       return;
     }
-    overlay = el('div', { class: 'modal-overlay' });
+    // overlay 在 close() 闭包中会被置空，下面用局部常量 overlayEl 承接当前实例
+    const overlayEl = el('div', { class: 'modal-overlay' });
+    overlay = overlayEl;
     const panel = el('div', { class: 'run-modal' });
     const titleBar = el('div', { class: 'commit-modal-title' }, '运行详情');
     const actions = el('div', { class: 'run-actions' });
@@ -99,14 +103,15 @@ export function createRunDetails(ctx) {
 
     panel.appendChild(titleBar);
     panel.appendChild(body);
-    overlay.appendChild(panel);
-    overlay.addEventListener('click', (ev) => {
+    overlayEl.appendChild(panel);
+    overlayEl.addEventListener('click', (ev) => {
       if (ev.target === overlay) close();
     });
     closeBtn.addEventListener('click', close);
-    document.body.appendChild(overlay);
+    document.body.appendChild(overlayEl);
 
     const tick = async () => {
+      /** @type {any} */
       let run = null;
       try {
         run = await api.getCurrentRun();

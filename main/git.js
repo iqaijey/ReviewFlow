@@ -191,9 +191,37 @@ function stripPrefix(p) {
   return p.replace(/^[ab]\//, '');
 }
 
+/**
+ * @typedef {object} DiffLine
+ * @property {'add' | 'del' | 'context'} type
+ * @property {string} content
+ * @property {number | null} oldLine
+ * @property {number | null} newLine
+ */
+
+/**
+ * @typedef {object} DiffHunk
+ * @property {string} header
+ * @property {number} oldStart
+ * @property {number} oldLines
+ * @property {number} newStart
+ * @property {number} newLines
+ * @property {DiffLine[]} lines
+ */
+
+/**
+ * @typedef {object} DiffFile
+ * @property {string} path
+ * @property {string} status
+ * @property {DiffHunk[]} hunks
+ * @property {string[]} classes
+ */
+
 function parseDiff(text) {
   const files = [];
+  /** @type {DiffFile | null} */
   let cur = null;
+  /** @type {DiffHunk | null} */
   let hunk = null;
   let oldLn = 0;
   let newLn = 0;

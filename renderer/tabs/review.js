@@ -15,6 +15,7 @@ const planReviewEnabled = () => localStorage.getItem('planReviewEnabled') !== '0
 // 拉取当前项目启用的需求方案并构造注入文本；未开启、无方案或接口缺失时返回 null
 async function loadPlanContext(api, folder) {
   if (!folder || !planReviewEnabled() || typeof api.getActivePlan !== 'function') return null;
+  /** @type {any} */
   let plan = null;
   try {
     plan = await api.getActivePlan(folder);

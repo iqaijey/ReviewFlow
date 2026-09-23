@@ -102,6 +102,7 @@ function renderPlanReader(el, mountNode, markdown) {
 
     // 兜底：滚动停止后若无 h2 命中窄带，取最后一个位于窄带顶部以上的 h2
     const scrollTarget = scroller || window;
+    /** @type {ReturnType<typeof setTimeout> | null} */
     let scrollTimer = null;
     const onScrollEnd = () => {
       if (!reader.isConnected) return;
@@ -131,7 +132,7 @@ function renderPlanReader(el, mountNode, markdown) {
         scrollTarget.removeEventListener('scroll', onScroll);
         return;
       }
-      clearTimeout(scrollTimer);
+      if (scrollTimer) clearTimeout(scrollTimer);
       scrollTimer = setTimeout(onScrollEnd, 120);
     };
     scrollTarget.addEventListener('scroll', onScroll, { passive: true });
@@ -265,6 +266,7 @@ export default {
     container.appendChild(listBox);
 
     // 当前编辑中的方案（新建草稿或从历史载入）
+    /** @type {{ planId: any, title: any, prdFileName: any, prdText: any, images: any[] } | null} */
     let editing = null; // { planId, title, prdFileName, prdText, images: [{name, dataUrl}] }
     let running = false;
 
@@ -363,6 +365,7 @@ export default {
       body.style.display = opening ? '' : 'none';
       if (!opening || body.dataset.loaded) return;
       body.dataset.loaded = '1';
+      /** @type {any} */
       let detail = null;
       try {
         detail = await api.getPlanDetail(state.folder, plan.id);

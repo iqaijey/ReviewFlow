@@ -58,8 +58,12 @@ function createFetchWindow(width, height) {
     show: false,
     width,
     height,
-    session: session.fromPartition('persist:planfetch'),
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      session: session.fromPartition('persist:planfetch'),
+    },
   });
 }
 
@@ -145,7 +149,9 @@ async function fetchPrdFallback(parsed) {
 
 async function fetchPrdFromUrl(url) {
   const parsed = assertHttpUrl(url);
+  /** @type {BrowserWindow | null} */
   let win = null;
+  /** @type {{ title: string, text: string } | null} */
   let result = null;
   try {
     try {
@@ -237,6 +243,7 @@ async function captureFullPage(win) {
 async function fetchDesignFromUrl(url) {
   const parsed = assertHttpUrl(url);
   // 图片直链：直接下载转 base64
+  /** @type {Response | null} */
   let res = null;
   try {
     res = await fetch(parsed.href, { redirect: 'follow', headers: { 'user-agent': UA } });
@@ -255,6 +262,7 @@ async function fetchDesignFromUrl(url) {
     try { res.body.cancel(); } catch { /* 忽略 */ }
   }
   // 网页（Figma 等）：隐藏窗口整页截图
+  /** @type {BrowserWindow | null} */
   let win = null;
   try {
     win = createFetchWindow(1440, 900);

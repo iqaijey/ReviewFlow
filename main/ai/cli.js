@@ -106,10 +106,13 @@ function chatViaCli(backend, cfg, messages, folder) {
         return;
       }
       let timedOut = false;
-      // detached 让子进程自成进程组，取消/超时时整组杀掉（含 bash 孙进程里的 CLI）
+      // detached 让子进程自成进程组，取消/超时时整组杀掉（含 bash 孙进程里的 CLI）。
+      // @types/node 的 ExecFileOptions 未声明 detached（运行时会透传给 spawn），
+      // 抽成变量绕开对象字面量的多余属性检查
+      const execOptions = { shell: '/bin/bash', maxBuffer: 10 * 1024 * 1024, env: cliEnv(), detached: true };
       const child = execFile(
         cmd,
-        { shell: '/bin/bash', maxBuffer: 10 * 1024 * 1024, env: cliEnv(), detached: true },
+        execOptions,
         (err, stdout, stderr) => {
           clearTimeout(timer);
           fs.unlink(tmpFile, () => {});

@@ -9,6 +9,7 @@ import { createRunDetails } from './runDetails.js';
 const api = window.autoReview;
 const bus = new EventTarget();
 
+/** @type {{ folder: string | null, base: string | null, changes: any, changesFp: string | null, selectedFile: any, selectedLine?: any }} */
 const state = {
   folder: null,
   base: null,
@@ -17,6 +18,11 @@ const state = {
   selectedFile: null,
 };
 
+/**
+ * @param {string} tag
+ * @param {Record<string, any>} [attrs]
+ * @param {any} [children]
+ */
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -29,16 +35,16 @@ function el(tag, attrs = {}, children = []) {
       for (const [dk, dv] of Object.entries(value)) node.dataset[dk] = dv;
     } else node.setAttribute(key, value);
   }
-  for (const child of [].concat(children)) {
+  for (const child of (/** @type {any[]} */ ([])).concat(children)) {
     if (child == null) continue;
     node.append(child.nodeType ? child : document.createTextNode(String(child)));
   }
   return node;
 }
 
-const projectPathEl = document.getElementById('project-path');
-const selectBtn = document.getElementById('btn-select-folder');
-const rescanBtn = document.getElementById('btn-rescan');
+const projectPathEl = /** @type {HTMLElement} */ (document.getElementById('project-path'));
+const selectBtn = /** @type {HTMLButtonElement} */ (document.getElementById('btn-select-folder'));
+const rescanBtn = /** @type {HTMLButtonElement} */ (document.getElementById('btn-rescan'));
 
 function setLoading(loading) {
   selectBtn.disabled = loading;
@@ -142,6 +148,7 @@ function notify(title, body) {
 }
 
 // 最近项目下拉：点击 header 路径展开，点击其他位置关闭
+/** @type {HTMLElement | null} */
 let recentDropdown = null;
 function closeRecentDropdown() {
   if (recentDropdown) {
@@ -185,15 +192,17 @@ async function toggleRecentDropdown() {
 projectPathEl.addEventListener('click', toggleRecentDropdown);
 document.addEventListener('click', (ev) => {
   if (!recentDropdown) return;
-  if (recentDropdown.contains(ev.target) || projectPathEl.contains(ev.target)) return;
+  const target = /** @type {Node | null} */ (ev.target);
+  if (recentDropdown.contains(target) || projectPathEl.contains(target)) return;
   closeRecentDropdown();
 });
 
 // 文件监听：变化防抖 2s 后自动重新扫描
+/** @type {ReturnType<typeof setTimeout> | null} */
 let watchTimer = null;
 if (typeof api.onFsChanged === 'function') {
   api.onFsChanged(() => {
-    clearTimeout(watchTimer);
+    if (watchTimer) clearTimeout(watchTimer);
     watchTimer = setTimeout(async () => {
       if (!state.folder) return;
       try {
@@ -208,8 +217,8 @@ const ctx = { api, state, bus, selectFolder, el, errText, notify, toast, changes
 ctx.showRunDetails = createRunDetails(ctx);
 
 const tabs = [overviewTab, reviewTab, explainTab, fullExplainTab, settingsTab, planTab];
-const tabBar = document.getElementById('tab-bar');
-const tabContent = document.getElementById('tab-content');
+const tabBar = /** @type {HTMLElement} */ (document.getElementById('tab-bar'));
+const tabContent = /** @type {HTMLElement} */ (document.getElementById('tab-content'));
 const mounted = new Map();
 let activeId = null;
 
@@ -229,13 +238,15 @@ function activateTab(id) {
   if (id === activeId) return;
   activeId = id;
   for (const btn of tabBar.children) {
-    btn.classList.toggle('active', btn.dataset.tabId === id);
+    const tabBtn = /** @type {HTMLElement} */ (btn);
+    tabBtn.classList.toggle('active', tabBtn.dataset.tabId === id);
   }
   for (const [tabId, panel] of mounted) {
     panel.hidden = tabId !== id;
   }
   if (!mounted.has(id)) {
     const tab = tabs.find((t) => t.id === id);
+    if (!tab) return;
     const panel = el('div', { class: 'tab-panel', dataset: { tabId: id } });
     tabContent.append(panel);
     tab.mount(panel, ctx);
@@ -265,8 +276,9 @@ bus.addEventListener('file:analyze', () => {
 
 // .md 容器内的代码块：点击复制全部代码，不影响其他点击行为
 document.addEventListener('click', (ev) => {
-  const pre = ev.target && typeof ev.target.closest === 'function'
-    ? ev.target.closest('.md pre')
+  const target = /** @type {Element | null} */ (ev.target);
+  const pre = target && typeof target.closest === 'function'
+    ? target.closest('.md pre')
     : null;
   if (!pre) return;
   navigator.clipboard.writeText(pre.textContent)
@@ -287,6 +299,7 @@ document.addEventListener('keydown', (ev) => {
 });
 
 // 快捷键说明弹窗：按 ? 打开，点遮罩 / Esc 关闭
+/** @type {HTMLElement | null} */
 let shortcutOverlay = null;
 function closeShortcuts() {
   if (shortcutOverlay) {
@@ -330,7 +343,7 @@ document.addEventListener('keydown', (ev) => {
     return;
   }
   if (ev.key !== '?' || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-  const t = ev.target;
+  const t = /** @type {HTMLElement | null} */ (ev.target);
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
       t.tagName === 'SELECT' || t.isContentEditable)) return;
   ev.preventDefault();

@@ -14,5 +14,7 @@ jobs:
       - run: npm ci
       - name: 语法检查
         run: npm run check
+      - name: 类型检查
+        run: npm run typecheck
       - name: 单测
         run: npm test

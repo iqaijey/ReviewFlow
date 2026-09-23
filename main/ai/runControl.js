@@ -40,7 +40,7 @@ function setChunkSender(fn) {
 }
 
 function cancelledError() {
-  const err = new Error('已被用户终止');
+  const err = /** @type {Error & { cancelled: boolean }} */ (new Error('已被用户终止'));
   err.cancelled = true;
   return err;
 }

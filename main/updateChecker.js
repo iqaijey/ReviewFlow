@@ -37,7 +37,7 @@ async function fetchNotes() {
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) return { notes: '', releaseUrl: '' };
-    const release = await response.json();
+    const release = /** @type {any} */ (await response.json());
     return {
       notes: release.name || release.body || '',
       releaseUrl: release.html_url || '',
@@ -126,10 +126,10 @@ async function downloadUpdate(dmgUrl, onProgress) {
   try {
     for await (const chunk of response.body) {
       if (!writer.write(chunk)) {
-        await new Promise((resolve, reject) => {
-          writer.once('drain', resolve);
+        await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
+          writer.once('drain', () => resolve());
           writer.once('error', reject);
-        });
+        }));
       }
       downloaded += chunk.length;
       if (total > 0) {
@@ -140,9 +140,9 @@ async function downloadUpdate(dmgUrl, onProgress) {
         }
       }
     }
-    await new Promise((resolve, reject) => {
+    await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
       writer.end((err) => (err ? reject(err) : resolve()));
-    });
+    }));
   } catch (err) {
     writer.destroy();
     await fs.promises.unlink(filePath).catch(() => {});

@@ -4,12 +4,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const exec = (bin, args) => new Promise((resolve, reject) => {
+const exec = (bin, args) => /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
   execFile(bin, args, { timeout: 60_000 }, (err, _stdout, stderr) => {
     if (err) reject(new Error(stderr || err.message));
     else resolve();
   });
-});
+}));
 
 function customIconPath() {
   const { app } = require('electron');
