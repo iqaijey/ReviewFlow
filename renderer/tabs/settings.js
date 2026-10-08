@@ -407,7 +407,7 @@ export default {
         if (meta) row.appendChild(el('span', { class: 'preset-meta' }, meta));
         const applyBtn = el('button', { class: 'btn', type: 'button' }, '应用');
         applyBtn.addEventListener('click', () => applyPreset(preset));
-        const delBtn = el('button', { class: 'btn', type: 'button' }, '删除');
+        const delBtn = el('button', { class: 'btn btn-danger', type: 'button' }, '删除');
         delBtn.addEventListener('click', async () => {
           cachedPresets = cachedPresets.filter((p) => p.id !== preset.id);
           renderPresetList();

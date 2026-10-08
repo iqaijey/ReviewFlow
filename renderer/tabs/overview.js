@@ -8,7 +8,7 @@ export default {
   title: '改动总览',
 
   mount(container, ctx) {
-    const { el, bus, state, api, errText, toast } = ctx;
+    const { el, bus, state, api, errText, toast, emptyState } = ctx;
 
     const statsBar = el('div', { class: 'overview-stats' });
 
@@ -106,22 +106,14 @@ export default {
       applySearchHighlight(false);
     });
 
-    const showEmpty = (text) => {
+    const showEmpty = (text, sub) => {
       statsBar.textContent = '';
       fileList.textContent = '';
       diffView.textContent = '';
       collapseAllBtn.disabled = true;
       lastDiffFile = null;
       lastDiffRows = [];
-      const hint = el('div', { class: 'empty-hint' });
-      hint.innerHTML =
-        '<svg class="empty-icon" width="44" height="44" viewBox="0 0 24 24" fill="none" ' +
-        'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
-        '<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>' +
-        '<path d="M18 9a9 9 0 0 1-9 9"/></svg>' +
-        `<div></div>`;
-      hint.lastElementChild.textContent = text;
-      diffView.appendChild(hint);
+      diffView.appendChild(emptyState(text, sub));
     };
 
     // ---------- 按类选择（逐句解析用） ----------
@@ -611,11 +603,12 @@ export default {
       }
       const changes = state.changes;
       if (!changes) {
-        showEmpty('请先选择项目文件夹');
+        showEmpty('请先选择项目文件夹', '点击右上角「选择项目文件夹」，这里会列出全部改动');
         return;
       }
       if (!changes.files.length) {
-        showEmpty(state.base ? '该基准下没有改动' : '当前没有未提交的改动');
+        showEmpty(state.base ? '该基准下没有改动' : '当前没有未提交的改动',
+          state.base ? '换个基准试试，或回到「未提交改动」' : '工作区当前是干净的');
         return;
       }
       renderStats(changes);
@@ -628,7 +621,8 @@ export default {
       applySearchHighlight(false);
     };
 
-    showEmpty(state.folder ? '当前没有未提交的改动' : '请先选择项目文件夹');
+    showEmpty(state.folder ? '当前没有未提交的改动' : '请先选择项目文件夹',
+      state.folder ? '工作区当前是干净的' : '点击右上角「选择项目文件夹」，这里会列出全部改动');
     rebuildBaseOptions();
     bus.addEventListener('changes:loaded', render);
   },

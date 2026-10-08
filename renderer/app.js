@@ -89,6 +89,21 @@ function toast(msg) {
   }, 2500);
 }
 
+// 统一空状态：居中图标 + 主文案 + 弱化副文案（feather inbox 图标）
+const EMPTY_STATE_ICON =
+  '<svg class="empty-state-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M22 12h-6l-2 3h-4l-2-3H2"/>' +
+  '<path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89' +
+  'A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>';
+function emptyState(title, sub) {
+  const node = el('div', { class: 'empty-state' });
+  node.innerHTML = EMPTY_STATE_ICON;
+  node.appendChild(el('div', { class: 'empty-state-title' }, title));
+  if (sub) node.appendChild(el('div', { class: 'empty-state-sub' }, sub));
+  return node;
+}
+
 async function loadProject(folder) {
   try {
     state.folder = folder;
@@ -213,7 +228,7 @@ if (typeof api.onFsChanged === 'function') {
   });
 }
 
-const ctx = { api, state, bus, selectFolder, el, errText, notify, toast, changesFingerprint };
+const ctx = { api, state, bus, selectFolder, el, errText, notify, toast, changesFingerprint, emptyState };
 ctx.showRunDetails = createRunDetails(ctx);
 
 const tabs = [overviewTab, reviewTab, explainTab, fullExplainTab, settingsTab, planTab];

@@ -145,7 +145,7 @@ export default {
   title: '需求方案',
 
   mount(container, ctx) {
-    const { el, bus, state, api, errText, notify, toast } = ctx;
+    const { el, bus, state, api, errText, notify, toast, emptyState } = ctx;
 
     const supported = typeof api.listPlans === 'function' &&
       typeof api.createPlan === 'function' && typeof api.generatePlan === 'function';
@@ -437,7 +437,7 @@ export default {
     const loadList = async () => {
       listBox.textContent = '';
       if (!state.folder) {
-        listBox.appendChild(el('div', { class: 'empty-hint' }, '请先选择项目文件夹'));
+        listBox.appendChild(emptyState('请先选择项目文件夹'));
         return;
       }
       if (!supported) {
@@ -454,8 +454,8 @@ export default {
         return;
       }
       if (!plans || !plans.length) {
-        listBox.appendChild(el('div', { class: 'empty-hint' },
-          '暂无方案，上传 PRD 文档与设计稿后点击「生成方案」'));
+        listBox.appendChild(emptyState('暂无方案',
+          '上传 PRD 文档与设计稿后，点击「生成方案」'));
         return;
       }
       for (const plan of plans) {

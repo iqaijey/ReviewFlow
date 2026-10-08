@@ -54,7 +54,7 @@ export default {
   title: '完整讲解',
 
   mount(container, ctx) {
-    const { el, bus, state, api, errText, notify, toast } = ctx;
+    const { el, bus, state, api, errText, notify, toast, emptyState } = ctx;
 
     const toolbar = el('div', { class: 'review-toolbar' });
     const hint = el('span', { class: 'stat-item' },
@@ -217,7 +217,7 @@ export default {
     const loadHistory = async () => {
       historyPanel.textContent = '';
       if (!state.folder) {
-        historyPanel.appendChild(el('div', { class: 'empty-hint' }, '请先选择项目文件夹'));
+        historyPanel.appendChild(emptyState('请先选择项目文件夹'));
         return;
       }
       let reviews = [];
@@ -230,8 +230,8 @@ export default {
       }
       reviews = (reviews || []).filter((entry) => entry.kind === 'full');
       if (!reviews.length) {
-        historyPanel.appendChild(el('div', { class: 'empty-hint' },
-          '暂无历史讲解记录，完成一次完整讲解后会自动保存'));
+        historyPanel.appendChild(emptyState('暂无历史讲解记录',
+          '完成一次完整讲解后会自动保存到这里'));
         return;
       }
       const list = el('div', { class: 'review-history' });
@@ -292,7 +292,7 @@ export default {
       if (!state.changes || !state.changes.files.length) {
         startBtn.disabled = true;
         if (!mdBox.firstChild) {
-          setStatus(el('div', { class: 'empty-hint' },
+          setStatus(emptyState('暂无可讲解的改动',
             '请先在「改动总览」中选择项目文件夹并确保存在改动'));
         }
         return;

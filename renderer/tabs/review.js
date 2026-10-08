@@ -92,7 +92,7 @@ export default {
   title: '多角度 Review',
 
   mount(container, ctx) {
-    const { el, bus, state, api, errText, notify, toast } = ctx;
+    const { el, bus, state, api, errText, notify, toast, emptyState } = ctx;
 
     // 顶部方案参照提示条，内容由 refreshPlanHint 填充
     const planHint = el('div', {
@@ -536,8 +536,8 @@ export default {
       if (!state.changes || !state.changes.files.length) {
         startBtn.disabled = true;
         startBtn.textContent = '开始 AI 分析';
-        setStatus(el('div', { class: 'empty-hint' },
-          '请先在「改动总览」中选择项目文件夹并确保存在未提交的改动'));
+        setStatus(emptyState('暂无可评审的改动',
+          '请先在「改动总览」中选择项目文件夹，并确保存在未提交的改动'));
         return;
       }
       startBtn.disabled = running;
@@ -655,8 +655,8 @@ export default {
       filesPanel.textContent = '';
       fileAnalyzeTriggers.clear();
       if (!state.changes || !state.changes.files.length) {
-        filesPanel.appendChild(el('div', { class: 'empty-hint' },
-          '请先在「改动总览」中加载项目改动'));
+        filesPanel.appendChild(emptyState('请先加载项目改动',
+          '在「改动总览」中选择项目文件夹后，这里会列出可逐文件分析的改动'));
         return;
       }
       for (const file of state.changes.files) {
@@ -725,7 +725,7 @@ export default {
     const loadHistory = async () => {
       historyPanel.textContent = '';
       if (!state.folder) {
-        historyPanel.appendChild(el('div', { class: 'empty-hint' }, '请先选择项目文件夹'));
+        historyPanel.appendChild(emptyState('请先选择项目文件夹'));
         return;
       }
       let reviews = [];
@@ -737,8 +737,8 @@ export default {
         return;
       }
       if (!reviews || !reviews.length) {
-        historyPanel.appendChild(el('div', { class: 'empty-hint' },
-          '暂无历史评审记录，完成一次整体分析后会自动保存'));
+        historyPanel.appendChild(emptyState('暂无历史评审记录',
+          '完成一次整体分析后会自动保存到这里'));
         return;
       }
       const list = el('div', { class: 'review-history' });

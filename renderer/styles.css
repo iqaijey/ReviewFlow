@@ -2,10 +2,13 @@
 :root {
   --bg: #1c1f24;
   --panel: #23272e;
+  --panel-raised: #2b313a;
   --border: #353b45;
+  --border-strong: #454c56;
   --text: #d8dee6;
   --text-dim: #9aa4b0;
   --accent: #4ec9b0;
+  --danger: #f85149;
   --mono: Menlo, Monaco, "Courier New", monospace;
 }
 
@@ -76,14 +79,20 @@ body {
 
 /* ---------- 按钮 ---------- */
 .btn {
-  padding: 5px 14px;
+  min-height: 28px;
+  padding: 3px 12px;
   border: 1px solid var(--border);
-  border-radius: 5px;
-  background: #333333;
+  border-radius: 8px;
+  background: #2d333b;
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s ease-out, border-color 0.15s ease-out,
+    transform 0.08s ease-out, box-shadow 0.15s ease-out;
 }
 
 .btn:hover { background: #3e3e3e; border-color: #505050; }
@@ -265,16 +274,22 @@ textarea {
   flex: 1;
   max-width: 520px;
   padding: 6px 10px;
-  background: #1b1b1b;
+  background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 8px;
   color: var(--text);
   font-size: 13px;
   outline: none;
+  transition: border-color 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+
+input:hover:not(:focus), select:hover:not(:focus), textarea:hover:not(:focus) {
+  border-color: var(--border-strong);
 }
 
 input:focus, select:focus, textarea:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(78, 201, 176, 0.18);
 }
 
 /* ---------- 加载 spinner ---------- */
@@ -396,8 +411,17 @@ input:focus, select:focus, textarea:focus {
 
 /* ---------- 滚动条 ---------- */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: #424242; border-radius: 5px; }
-::-webkit-scrollbar-thumb:hover { background: #4f4f4f; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ---------- 改动总览 ---------- */
@@ -699,12 +723,7 @@ body {
 }
 .app-title { letter-spacing: 0.3px; }
 
-/* 按钮 */
-.btn {
-  border-radius: 6px;
-  background: #2d333b;
-  transition: background 0.15s, border-color 0.15s, transform 0.08s, box-shadow 0.15s;
-}
+/* 按钮（三态统一，基座样式见顶部） */
 .btn:hover:not(:disabled) { background: #3a424c; border-color: #4a545f; }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: 0.45; }
@@ -805,11 +824,6 @@ body {
   padding-left: 12px;
   color: var(--text-dim);
 }
-
-/* 滚动条 */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #454c56; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #565e6a; }
 
 /* ---------- 总览工具栏（基准 + 搜索） ---------- */
 .overview-toolbar {
@@ -921,17 +935,19 @@ body {
   right: 16px;
   bottom: 16px;
   max-width: 420px;
-  padding: 8px 14px;
-  background: var(--panel);
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 10px 16px;
+  background: rgba(35, 39, 46, 0.95);
+  border: 1px solid rgba(78, 201, 176, 0.4);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: var(--text);
   font-size: 12px;
   z-index: 100;
-  animation: toastIn 0.2s ease;
+  animation: toastIn 0.18s ease-out;
 }
-.toast.toast-out { opacity: 0; transition: opacity 0.3s; }
+.toast.toast-out { opacity: 0; transform: translateY(4px); transition: opacity 0.3s, transform 0.3s; }
 @keyframes toastIn {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -1046,11 +1062,22 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
+  animation: overlayIn 0.15s ease-out;
+}
+@keyframes overlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: none; }
 }
 .commit-modal {
   width: 640px;
@@ -1059,10 +1086,11 @@ body {
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
   overflow: hidden;
+  animation: modalIn 0.18s ease-out;
 }
 .commit-modal-title {
   padding: 12px 16px;
@@ -1134,10 +1162,11 @@ body {
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
   overflow: hidden;
+  animation: modalIn 0.18s ease-out;
 }
 .run-modal .commit-modal-title {
   display: flex;
@@ -1577,11 +1606,6 @@ body {
   gap: 8px;
   margin-bottom: 8px;
 }
-.plan-del-btn {
-  border-color: rgba(248, 81, 73, 0.5);
-  color: #f85149;
-}
-.plan-del-btn:hover:not(:disabled) { background: rgba(248, 81, 73, 0.12); }
 
 /* ---------- 需求方案：链接导入 / PRD 编辑 ---------- */
 .plan-url-row {
@@ -1801,3 +1825,79 @@ body {
   min-height: 0;
   text-align: right;
 }
+
+/* ==================== 全局视觉打磨（统一覆盖，后置生效） ==================== */
+/* 圆角语言：卡片 10px / 面板与列表项 8px / chip 全圆角 */
+.review-file-item, .review-history-item, .plan-card,
+.explain-card, .explain-history-item, .review-checklist { border-radius: 10px; }
+.preset-item, .recent-dropdown { border-radius: 8px; }
+.review-chip, .seg-btn, .class-chip, .badge, .checklist-status,
+.plan-badge, .file-item .read-btn { border-radius: 999px; }
+
+/* 表单控件：hover / focus 光晕统一 */
+.settings-input, .base-select, .search-input { border-radius: 8px; }
+.settings-input:hover:not(:focus),
+.base-select:hover:not(:focus),
+.search-input:hover:not(:focus) { border-color: var(--border-strong); }
+.settings-input:focus, .base-select:focus, .search-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(78, 201, 176, 0.18);
+}
+
+/* diff 阅读区：柔和增删底色 + 行 hover 微高亮 + 行号弱化 */
+.line-add { background: rgba(46, 160, 67, 0.12); }
+.line-del { background: rgba(248, 81, 73, 0.10); }
+.diff-line .line-no { font-size: 11px; }
+.diff-line.clickable:hover, .line-clickable:hover {
+  filter: none;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.05));
+}
+.hunk-header { font-weight: 500; }
+
+/* 可点击卡片：hover 微浮起 */
+.plan-card, .review-history-item, .explain-history-item {
+  transition: transform 0.15s ease-out, box-shadow 0.15s ease-out, border-color 0.15s ease-out;
+}
+.plan-card:hover, .review-history-item:hover, .explain-history-item:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.30);
+}
+.plan-card.active:hover { border-color: var(--accent); }
+
+/* 危险操作按钮：弱化红色描边，hover 才给底色 */
+.btn-danger, .plan-del-btn {
+  background: transparent;
+  border-color: rgba(248, 81, 73, 0.4);
+  color: var(--danger);
+}
+.btn-danger:hover:not(:disabled), .plan-del-btn:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.12);
+  border-color: rgba(248, 81, 73, 0.6);
+}
+
+/* 统一空状态：居中图标 + 主文案 + 弱化副文案 */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 220px;
+  height: 100%;
+  padding: 60px 20px;
+  text-align: center;
+}
+.empty-state-icon { color: var(--text-dim); opacity: 0.35; margin-bottom: 6px; }
+.empty-state-title { font-size: 13px; font-weight: 500; color: var(--text); }
+.empty-state-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  max-width: 380px;
+  line-height: 1.6;
+}
+
+/* 浮层与弹窗细节 */
+.recent-dropdown { animation: modalIn 0.15s ease-out; }
+.commit-row { transition: background 0.12s; }
+.recent-item { transition: background 0.12s, color 0.12s; }

@@ -54,7 +54,7 @@ export default {
   title: '逐句解析',
 
   mount(container, ctx) {
-    const { el, bus, state, api, errText, notify } = ctx;
+    const { el, bus, state, api, errText, notify, emptyState } = ctx;
 
     const contextBox = el('div', { class: 'explain-context' });
     const statusBox = el('div', { class: 'explain-status' });
@@ -76,8 +76,8 @@ export default {
       contextBox.textContent = '';
       resultBox.textContent = '';
       historyTitle.style.display = 'none';
-      setStatus(el('div', { class: 'empty-hint' },
-        '请在「改动总览」中点击一行改动（拖动或 ⌥+点击可框选多行）'));
+      setStatus(emptyState('还没有选中要解析的改动',
+        '在「改动总览」中点击一行改动，拖动或 ⌥+点击可框选多行'));
     };
 
     // 统一成行号标注
