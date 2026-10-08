@@ -73,6 +73,10 @@ export default {
     container.appendChild(toolbar);
     container.appendChild(body);
 
+    // 无项目/无改动时：隐藏统计条与双栏，只显示一个居中的空状态
+    const emptyHost = el('div', { class: 'overview-empty', style: 'display: none' });
+    container.appendChild(emptyHost);
+
     const readSet = new Set(); // 已读文件（按 path），切换项目时清空
     let collapsed = new Set(); // 折叠的 hunk，key = `${file.path}#${hunkIndex}`
     let knownFolder = null;
@@ -106,14 +110,16 @@ export default {
       applySearchHighlight(false);
     });
 
-    const showEmpty = (text, sub) => {
-      statsBar.textContent = '';
-      fileList.textContent = '';
-      diffView.textContent = '';
+    const showEmpty = (text, sub, hideChrome) => {
+      statsBar.style.display = 'none';
+      body.style.display = 'none';
+      toolbar.style.display = hideChrome ? 'none' : '';
       collapseAllBtn.disabled = true;
       lastDiffFile = null;
       lastDiffRows = [];
-      diffView.appendChild(emptyState(text, sub));
+      emptyHost.style.display = '';
+      emptyHost.textContent = '';
+      emptyHost.appendChild(emptyState(text, sub));
     };
 
     // ---------- 按类选择（逐句解析用） ----------
@@ -464,7 +470,7 @@ export default {
       }
       diffView.textContent = '';
       if (!file.hunks.length) {
-        diffView.appendChild(el('div', { class: 'empty-hint' }, '该文件没有可展示的 diff 内容'));
+        diffView.appendChild(emptyState('该文件没有可展示的 diff 内容'));
         lastDiffFile = file;
         lastDiffRows = [];
         updateCollapseAllBtn();
@@ -603,7 +609,7 @@ export default {
       }
       const changes = state.changes;
       if (!changes) {
-        showEmpty('请先选择项目文件夹', '点击右上角「选择项目文件夹」，这里会列出全部改动');
+        showEmpty('请先选择项目文件夹', '点击左下角「选择项目」开始', true);
         return;
       }
       if (!changes.files.length) {
@@ -611,6 +617,10 @@ export default {
           state.base ? '换个基准试试，或回到「未提交改动」' : '工作区当前是干净的');
         return;
       }
+      statsBar.style.display = '';
+      toolbar.style.display = '';
+      body.style.display = '';
+      emptyHost.style.display = 'none';
       renderStats(changes);
       const file = state.selectedFile && changes.files.includes(state.selectedFile)
         ? state.selectedFile
@@ -622,7 +632,7 @@ export default {
     };
 
     showEmpty(state.folder ? '当前没有未提交的改动' : '请先选择项目文件夹',
-      state.folder ? '工作区当前是干净的' : '点击右上角「选择项目文件夹」，这里会列出全部改动');
+      state.folder ? '工作区当前是干净的' : '点击左下角「选择项目」开始', !state.folder);
     rebuildBaseOptions();
     bus.addEventListener('changes:loaded', render);
   },

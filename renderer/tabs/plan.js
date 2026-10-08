@@ -437,7 +437,7 @@ export default {
     const loadList = async () => {
       listBox.textContent = '';
       if (!state.folder) {
-        listBox.appendChild(emptyState('请先选择项目文件夹'));
+        listBox.appendChild(emptyState('请先选择项目文件夹', '点击左下角「选择项目」开始'));
         return;
       }
       if (!supported) {

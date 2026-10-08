@@ -537,7 +537,7 @@ export default {
         startBtn.disabled = true;
         startBtn.textContent = '开始 AI 分析';
         setStatus(emptyState('暂无可评审的改动',
-          '请先在「改动总览」中选择项目文件夹，并确保存在未提交的改动'));
+          '点击左下角「选择项目」选择项目文件夹，并确保存在未提交的改动'));
         return;
       }
       startBtn.disabled = running;
@@ -656,7 +656,7 @@ export default {
       fileAnalyzeTriggers.clear();
       if (!state.changes || !state.changes.files.length) {
         filesPanel.appendChild(emptyState('请先加载项目改动',
-          '在「改动总览」中选择项目文件夹后，这里会列出可逐文件分析的改动'));
+          '点击左下角「选择项目」后，这里会列出可逐文件分析的改动'));
         return;
       }
       for (const file of state.changes.files) {
@@ -725,7 +725,7 @@ export default {
     const loadHistory = async () => {
       historyPanel.textContent = '';
       if (!state.folder) {
-        historyPanel.appendChild(emptyState('请先选择项目文件夹'));
+        historyPanel.appendChild(emptyState('请先选择项目文件夹', '点击左下角「选择项目」开始'));
         return;
       }
       let reviews = [];

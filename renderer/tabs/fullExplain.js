@@ -217,7 +217,7 @@ export default {
     const loadHistory = async () => {
       historyPanel.textContent = '';
       if (!state.folder) {
-        historyPanel.appendChild(emptyState('请先选择项目文件夹'));
+        historyPanel.appendChild(emptyState('请先选择项目文件夹', '点击左下角「选择项目」开始'));
         return;
       }
       let reviews = [];
@@ -293,7 +293,7 @@ export default {
         startBtn.disabled = true;
         if (!mdBox.firstChild) {
           setStatus(emptyState('暂无可讲解的改动',
-            '请先在「改动总览」中选择项目文件夹并确保存在改动'));
+            '点击左下角「选择项目」选择项目文件夹，并确保存在改动'));
         }
         return;
       }
