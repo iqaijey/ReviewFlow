@@ -1,4 +1,4 @@
-// AI 设置：接入方式（API Key / 本地 OpenCode）+ 各方式的参数配置
+// AI 设置：分组卡片布局 —— 接入方式 / 模型与参数 / 评审内容 / 评审预设 / 个性化与应用
 const DEFAULTS = {
   provider: 'openai-compatible',
   backend: 'api',
@@ -22,11 +22,29 @@ export default {
 
     const form = el('div', { class: 'settings-form' });
 
+    const messageBox = el('div', { class: 'settings-message' });
     const showMessage = (text, ok) => {
       messageBox.textContent = '';
       messageBox.appendChild(el('div', {
         class: ok ? 'settings-msg-ok' : 'settings-msg-err',
       }, text));
+    };
+
+    // 分组卡片：标题 + 副标题说明 + 内容区
+    const makeCard = (title, subtitle) => {
+      const card = el('section', { class: 'settings-card' });
+      const head = el('div', { class: 'settings-card-head' });
+      head.appendChild(el('div', { class: 'settings-card-title' }, title));
+      if (subtitle) head.appendChild(el('div', { class: 'settings-card-sub' }, subtitle));
+      card.appendChild(head);
+      return card;
+    };
+
+    const makeField = (labelText, node) => {
+      const field = el('div', { class: 'settings-field' });
+      field.appendChild(el('label', { class: 'settings-label' }, labelText));
+      field.appendChild(node);
+      return field;
     };
 
     // 模型行：手动输入框，拉取成功后切换为原生 select 下拉；「手动」可切回
@@ -104,48 +122,40 @@ export default {
       return row;
     };
 
-    // ---------- 接入方式 ----------
+    // ---------- 接入方式（卡片式选择器） ----------
     const BACKENDS = [
-      ['api', ' API Key（OpenAI 兼容接口）'],
-      ['opencode', ' 本地 OpenCode / OMO（无需 Key）'],
-      ['kimi', ' 本地 Kimi CLI（无需 Key）'],
-      ['codex', ' 本地 Codex CLI（无需 Key）'],
+      ['api', 'API Key', 'OpenAI 兼容接口，需提供 API Key'],
+      ['opencode', '本地 OpenCode', 'OpenCode / OMO CLI，无需 Key'],
+      ['kimi', '本地 Kimi CLI', 'Kimi Code CLI，无需 Key'],
+      ['codex', '本地 Codex CLI', 'Codex CLI 只读沙箱，无需 Key'],
     ];
-    const backendField = el('div', { class: 'settings-field' });
-    backendField.appendChild(el('label', { class: 'settings-label' }, '接入方式'));
-    const backendGroup = el('div', { class: 'settings-backend-group' });
+    const backendGrid = el('div', { class: 'settings-backend-grid' });
     const radios = {};
-    for (const [value, label] of BACKENDS) {
+    const backendCards = {};
+    for (const [value, name, desc] of BACKENDS) {
       const radio = el('input', {
-        type: 'radio', name: 'backend', value, id: `backend-${value}`,
+        type: 'radio', name: 'backend', value, id: `backend-${value}`, class: 'backend-radio',
       });
       radios[value] = radio;
-      const option = el('label', { class: 'settings-backend-option', for: `backend-${value}` });
-      option.appendChild(radio);
-      option.appendChild(document.createTextNode(label));
-      backendGroup.appendChild(option);
+      const card = el('label', { class: 'backend-card', for: `backend-${value}` });
+      card.appendChild(radio);
+      card.appendChild(el('div', { class: 'backend-card-name' }, name));
+      card.appendChild(el('div', { class: 'backend-card-desc' }, desc));
+      backendCards[value] = card;
+      backendGrid.appendChild(card);
     }
-    backendField.appendChild(backendGroup);
-    form.appendChild(backendField);
 
     const currentBackend = () =>
       BACKENDS.find(([v]) => radios[v].checked)?.[0] || 'api';
 
-    const makeField = (labelText, node) => {
-      const field = el('div', { class: 'settings-field' });
-      field.appendChild(el('label', { class: 'settings-label' }, labelText));
-      field.appendChild(node);
-      return field;
-    };
-
-    // ---------- API Key 方式 ----------
-    const apiFields = el('div', { class: 'settings-backend-fields' });
+    // ---------- API Key 方式：连接字段 ----------
+    const apiConnFields = el('div', { class: 'settings-backend-fields' });
 
     const baseUrlInput = el('input', {
       class: 'settings-input', type: 'text',
       placeholder: DEFAULTS.baseUrl, spellcheck: 'false',
     });
-    apiFields.appendChild(makeField('接口地址（Base URL）', baseUrlInput));
+    apiConnFields.appendChild(makeField('接口地址（Base URL）', baseUrlInput));
 
     const keyWrap = el('div', { class: 'settings-key-wrap' });
     const apiKeyInput = el('input', {
@@ -160,7 +170,39 @@ export default {
     });
     keyWrap.appendChild(apiKeyInput);
     keyWrap.appendChild(toggleKey);
-    apiFields.appendChild(makeField('API Key', keyWrap));
+    apiConnFields.appendChild(makeField('API Key', keyWrap));
+
+    apiConnFields.appendChild(el('div', { class: 'settings-hint' },
+      '兼容 OpenAI Chat Completions 接口的服务均可使用（如 OpenAI、DeepSeek、Kimi 等）'));
+    apiConnFields.appendChild(el('div', { class: 'settings-hint' },
+      'API Key 仅保存在本机应用数据目录，不会上传到任何第三方'));
+
+    // ---------- 本地 OpenCode 方式：说明 ----------
+    const opencodeConnFields = el('div', { class: 'settings-backend-fields' });
+    opencodeConnFields.appendChild(el('div', { class: 'settings-hint' },
+      '通过本机 opencode CLI 执行评审，使用你在 OpenCode / OMO 中已配置好的模型与登录态'));
+    opencodeConnFields.appendChild(el('div', { class: 'settings-hint' },
+      '需已安装 opencode 命令行（brew install opencode），本地模型响应可能较慢，请耐心等待'));
+
+    // ---------- 本地 Kimi CLI 方式：说明 ----------
+    const kimiConnFields = el('div', { class: 'settings-backend-fields' });
+    kimiConnFields.appendChild(el('div', { class: 'settings-hint' },
+      '通过本机 kimi CLI 执行评审（kimi -p），使用你在 Kimi Code CLI 中已配置好的模型与登录态'));
+
+    // ---------- 本地 Codex CLI 方式：说明 ----------
+    const codexConnFields = el('div', { class: 'settings-backend-fields' });
+    codexConnFields.appendChild(el('div', { class: 'settings-hint' },
+      '通过本机 codex CLI 执行评审（codex exec），只读沙箱模式，不会修改项目文件'));
+    codexConnFields.appendChild(el('div', { class: 'settings-hint' },
+      '需已安装并登录 codex（brew install codex && codex login）'));
+
+    const cardBackend = makeCard('接入方式', '选择评审的执行方式，切换后显示对应的连接配置');
+    cardBackend.appendChild(backendGrid);
+    cardBackend.appendChild(apiConnFields);
+    cardBackend.appendChild(opencodeConnFields);
+    cardBackend.appendChild(kimiConnFields);
+    cardBackend.appendChild(codexConnFields);
+    form.appendChild(cardBackend);
 
     const currentSettings = () => ({
       provider: 'openai-compatible',
@@ -177,66 +219,30 @@ export default {
       timeoutMin: Math.max(1, Math.round(Number(timeoutInput.value) || 10)),
     });
 
+    // ---------- 各接入方式的模型字段 ----------
+    const apiModelFields = el('div', { class: 'settings-backend-fields' });
     const modelRow = makeModelRow(DEFAULTS.model, () => ({
       ...currentSettings(), backend: 'api',
     }));
-    apiFields.appendChild(makeField('模型（Model）', modelRow.element));
+    apiModelFields.appendChild(makeField('模型（Model）', modelRow.element));
 
-    apiFields.appendChild(el('div', { class: 'settings-hint' },
-      '兼容 OpenAI Chat Completions 接口的服务均可使用（如 OpenAI、DeepSeek、Kimi 等）'));
-    apiFields.appendChild(el('div', { class: 'settings-hint' },
-      'API Key 仅保存在本机应用数据目录，不会上传到任何第三方'));
-    form.appendChild(apiFields);
-
-    // ---------- 本地 OpenCode 方式 ----------
-    const opencodeFields = el('div', { class: 'settings-backend-fields' });
-
+    const opencodeModelFields = el('div', { class: 'settings-backend-fields' });
     const opencodeModelRow = makeModelRow('provider/model，留空使用 opencode 默认模型', () => ({
       ...currentSettings(), backend: 'opencode',
     }));
-    opencodeFields.appendChild(makeField('模型（可选）', opencodeModelRow.element));
+    opencodeModelFields.appendChild(makeField('模型（可选）', opencodeModelRow.element));
 
-    opencodeFields.appendChild(el('div', { class: 'settings-hint' },
-      '通过本机 opencode CLI 执行评审，使用你在 OpenCode / OMO 中已配置好的模型与登录态'));
-    opencodeFields.appendChild(el('div', { class: 'settings-hint' },
-      '需已安装 opencode 命令行（brew install opencode），本地模型响应可能较慢，请耐心等待'));
-    form.appendChild(opencodeFields);
-
-    // ---------- 本地 Kimi CLI 方式 ----------
-    const kimiFields = el('div', { class: 'settings-backend-fields' });
+    const kimiModelFields = el('div', { class: 'settings-backend-fields' });
     const kimiModelRow = makeModelRow('模型别名，留空使用 kimi 默认模型', () => ({
       ...currentSettings(), backend: 'kimi',
     }));
-    kimiFields.appendChild(makeField('模型（可选）', kimiModelRow.element));
-    kimiFields.appendChild(el('div', { class: 'settings-hint' },
-      '通过本机 kimi CLI 执行评审（kimi -p），使用你在 Kimi Code CLI 中已配置好的模型与登录态'));
-    form.appendChild(kimiFields);
+    kimiModelFields.appendChild(makeField('模型（可选）', kimiModelRow.element));
 
-    // ---------- 本地 Codex CLI 方式 ----------
-    const codexFields = el('div', { class: 'settings-backend-fields' });
+    const codexModelFields = el('div', { class: 'settings-backend-fields' });
     const codexModelRow = makeModelRow('如 gpt-5-codex，留空使用 codex 默认模型', () => ({
       ...currentSettings(), backend: 'codex',
     }));
-    codexFields.appendChild(makeField('模型（可选）', codexModelRow.element));
-    codexFields.appendChild(el('div', { class: 'settings-hint' },
-      '通过本机 codex CLI 执行评审（codex exec），只读沙箱模式，不会修改项目文件'));
-    codexFields.appendChild(el('div', { class: 'settings-hint' },
-      '需已安装并登录 codex（brew install codex && codex login）'));
-    form.appendChild(codexFields);
-
-    // ---------- 接入方式切换 ----------
-    const backendFieldsMap = {
-      api: apiFields, opencode: opencodeFields, kimi: kimiFields, codex: codexFields,
-    };
-    const syncBackendFields = () => {
-      const active = currentBackend();
-      for (const [value, fields] of Object.entries(backendFieldsMap)) {
-        fields.style.display = value === active ? '' : 'none';
-      }
-    };
-    for (const radio of Object.values(radios)) {
-      radio.addEventListener('change', syncBackendFields);
-    }
+    codexModelFields.appendChild(makeField('模型（可选）', codexModelRow.element));
 
     // ---------- 超时时间 ----------
     const timeoutInput = el('input', {
@@ -247,7 +253,6 @@ export default {
     const timeoutField = makeField('超时时间（分钟）', timeoutInput);
     timeoutField.appendChild(el('div', { class: 'settings-hint' },
       '慢模型或大批量评审可能需要更久，超时可调大（1~120），对四种接入方式都生效'));
-    form.appendChild(timeoutField);
 
     // ---------- 思考强度 ----------
     const effortSelect = el('select', { class: 'settings-input settings-model-select' });
@@ -264,7 +269,37 @@ export default {
     const effortField = makeField('思考强度（可选）', effortSelect);
     effortField.appendChild(el('div', { class: 'settings-hint' },
       'API 映射为 reasoning_effort，OpenCode 为 --variant，Codex 为 model_reasoning_effort；Kimi CLI 读取其 config.toml；统计以实际生效值为准'));
-    form.appendChild(effortField);
+
+    const cardModel = makeCard('模型与参数', '当前接入方式使用的模型、思考强度与超时');
+    cardModel.appendChild(apiModelFields);
+    cardModel.appendChild(opencodeModelFields);
+    cardModel.appendChild(kimiModelFields);
+    cardModel.appendChild(codexModelFields);
+    cardModel.appendChild(timeoutField);
+    cardModel.appendChild(effortField);
+    form.appendChild(cardModel);
+
+    // ---------- 接入方式切换 ----------
+    const backendFieldsMap = {
+      api: [apiConnFields, apiModelFields],
+      opencode: [opencodeConnFields, opencodeModelFields],
+      kimi: [kimiConnFields, kimiModelFields],
+      codex: [codexConnFields, codexModelFields],
+    };
+    const syncBackendFields = () => {
+      const active = currentBackend();
+      for (const [value, fieldsList] of Object.entries(backendFieldsMap)) {
+        for (const fields of fieldsList) {
+          fields.style.display = value === active ? '' : 'none';
+        }
+      }
+      for (const [value, card] of Object.entries(backendCards)) {
+        card.classList.toggle('selected', value === active);
+      }
+    };
+    for (const radio of Object.values(radios)) {
+      radio.addEventListener('change', syncBackendFields);
+    }
 
     // ---------- 自定义检查维度 ----------
     const customDimensionsInput = el('textarea', {
@@ -275,7 +310,6 @@ export default {
     const customDimensionsField = makeField('自定义检查维度（可选，每行一个）', customDimensionsInput);
     customDimensionsField.appendChild(el('div', { class: 'settings-hint' },
       '会在多角度 Review 中追加为新的评审小节'));
-    form.appendChild(customDimensionsField);
 
     // ---------- 自定义评审要求 ----------
     const customPromptInput = el('textarea', {
@@ -285,16 +319,19 @@ export default {
     });
     const customPromptField = makeField('自定义评审要求（可选）', customPromptInput);
     customPromptField.appendChild(el('div', { class: 'settings-hint' },
-      '会追加到 AI 评审的系统指令中，对两种接入方式都生效'));
-    form.appendChild(customPromptField);
+      '会追加到 AI 评审的系统指令中，对所有接入方式都生效'));
+
+    const cardContent = makeCard('评审内容', '追加到 AI 评审指令中的自定义内容');
+    cardContent.appendChild(customDimensionsField);
+    cardContent.appendChild(customPromptField);
+    form.appendChild(cardContent);
 
     // ---------- 评审预设 ----------
     const MODEL_FIELD_BY_BACKEND = { api: 'model', opencode: 'opencodeModel', kimi: 'kimiModel', codex: 'codexModel' };
     const modelRowByBackend = { api: modelRow, opencode: opencodeModelRow, kimi: kimiModelRow, codex: codexModelRow };
     let cachedPresets = [];
 
-    const presetField = el('div', { class: 'settings-field' });
-    presetField.appendChild(el('label', { class: 'settings-label' }, '评审预设'));
+    const cardPreset = makeCard('评审预设', '把当前评审配置存为预设，可在多角度 Review 工具栏一键选用');
     const presetSaveRow = el('div', { class: 'preset-save-row' });
     const presetNameInput = el('input', {
       class: 'settings-input', type: 'text',
@@ -303,12 +340,12 @@ export default {
     const savePresetBtn = el('button', { class: 'btn', type: 'button' }, '把当前设置存为预设');
     presetSaveRow.appendChild(presetNameInput);
     presetSaveRow.appendChild(savePresetBtn);
-    presetField.appendChild(presetSaveRow);
+    cardPreset.appendChild(presetSaveRow);
     const presetList = el('div', { class: 'preset-list' });
-    presetField.appendChild(presetList);
-    presetField.appendChild(el('div', { class: 'settings-hint' },
-      '预设记录当前的自定义维度、自定义评审要求、接入方式、模型与思考强度，仅保存在本机；可在多角度 Review 工具栏直接选用'));
-    form.appendChild(presetField);
+    cardPreset.appendChild(presetList);
+    cardPreset.appendChild(el('div', { class: 'settings-hint' },
+      '预设记录当前的自定义维度、自定义评审要求、接入方式、模型与思考强度，仅保存在本机'));
+    form.appendChild(cardPreset);
 
     const persistPresets = async (okText) => {
       try {
@@ -363,7 +400,7 @@ export default {
         const row = el('div', { class: 'preset-item' });
         row.appendChild(el('span', { class: 'preset-name' }, preset.name || preset.id));
         const meta = [
-          BACKENDS.find(([v]) => v === preset.backend)?.[1]?.trim(),
+          BACKENDS.find(([v]) => v === preset.backend)?.[1],
           preset.model,
           preset.effort ? `思考 ${preset.effort}` : '',
         ].filter(Boolean).join(' · ');
@@ -405,20 +442,9 @@ export default {
       await persistPresets(`预设「${name}」已保存`);
     });
 
-    // ---------- 操作区 ----------
-    const actions = el('div', { class: 'settings-actions' });
-    const saveBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '保存');
-    const testBtn = el('button', { class: 'btn', type: 'button' }, '测试连接');
-    actions.appendChild(saveBtn);
-    actions.appendChild(testBtn);
-    form.appendChild(actions);
+    // ---------- 个性化与应用 ----------
+    const cardApp = makeCard('个性化与应用', '应用图标、版本与更新');
 
-    const messageBox = el('div', { class: 'settings-message' });
-    form.appendChild(messageBox);
-
-    container.appendChild(form);
-
-    // ---------- 应用图标 ----------
     const iconField = el('div', { class: 'settings-field' });
     iconField.appendChild(el('label', { class: 'settings-label' }, '应用图标'));
     const iconRow = el('div', { class: 'icon-row' });
@@ -435,7 +461,7 @@ export default {
     iconField.appendChild(iconRow);
     iconField.appendChild(el('div', { class: 'settings-hint' },
       '选择正方形图片效果最佳；立即更新 Dock 图标，打包版同时写入应用包（Finder/Launchpad）'));
-    container.appendChild(iconField);
+    cardApp.appendChild(iconField);
 
     const refreshIconUI = (preview) => {
       if (preview) {
@@ -486,7 +512,8 @@ export default {
     versionField.appendChild(versionRow);
     const updateStatus = el('div', { class: 'update-status' });
     versionField.appendChild(updateStatus);
-    container.appendChild(versionField);
+    cardApp.appendChild(versionField);
+    form.appendChild(cardApp);
 
     let currentVersionText = '';
     if (typeof api.getVersion === 'function') {
@@ -593,6 +620,17 @@ export default {
     if (typeof api.checkUpdates === 'function') {
       runCheck({ silent: true });
     }
+
+    // ---------- 吸底操作条 ----------
+    const actions = el('div', { class: 'settings-actions' });
+    const saveBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '保存');
+    const testBtn = el('button', { class: 'btn', type: 'button' }, '测试连接');
+    actions.appendChild(saveBtn);
+    actions.appendChild(testBtn);
+    actions.appendChild(messageBox);
+    form.appendChild(actions);
+
+    container.appendChild(form);
 
     api.getSettings().then((s) => {
       const merged = { ...DEFAULTS, ...(s || {}) };

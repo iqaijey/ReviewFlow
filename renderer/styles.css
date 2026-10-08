@@ -601,11 +601,11 @@ input:focus, select:focus, textarea:focus {
 
 /* ---------- AI 设置 ---------- */
 .settings-form {
-  max-width: 560px;
+  max-width: 640px;
   padding: 20px 16px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 .settings-field { display: flex; flex-direction: column; gap: 6px; }
 .settings-label { color: var(--text-dim); }
@@ -621,29 +621,42 @@ input:focus, select:focus, textarea:focus {
   width: 100%;
 }
 .settings-input:focus { border-color: var(--accent); }
-.settings-key-wrap { display: flex; gap: 8px; }
+.settings-key-wrap { display: flex; gap: 8px; align-items: center; }
 .settings-key-wrap .settings-input { flex: 1; }
 .settings-key-toggle { flex-shrink: 0; }
 .settings-hint { font-size: 12px; color: var(--text-dim); }
-.settings-actions { display: flex; gap: 10px; }
-.settings-message { min-height: 18px; }
+.settings-message { min-height: 18px; font-size: 12px; }
 .settings-msg-ok { color: #3fb950; }
 .settings-msg-err { color: #f85149; }
 
-/* ---------- AI 设置：接入方式 ---------- */
-.settings-backend-group {
+/* ---------- AI 设置：接入方式（卡片式选择器） ---------- */
+.settings-backend-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.backend-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-.settings-backend-option {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   cursor: pointer;
-  color: var(--text);
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
 }
-.settings-backend-option input { accent-color: var(--accent); }
+.backend-card:hover { border-color: #4a545f; background: rgba(255, 255, 255, 0.03); }
+.backend-card.selected {
+  border-color: rgba(78, 201, 176, 0.55);
+  background: rgba(78, 201, 176, 0.10);
+  box-shadow: 0 1px 6px rgba(78, 201, 176, 0.15);
+}
+.backend-card:focus-within { border-color: var(--accent); }
+.backend-radio { position: absolute; opacity: 0; pointer-events: none; }
+.backend-card-name { font-size: 13px; font-weight: 500; color: var(--text); }
+.backend-card.selected .backend-card-name { color: var(--accent); }
+.backend-card-desc { font-size: 11px; color: var(--text-dim); }
 .settings-backend-fields {
   display: flex;
   flex-direction: column;
@@ -1729,7 +1742,7 @@ body {
 .checklist-text { line-height: 1.5; }
 
 /* ---------- AI 设置：评审预设管理 ---------- */
-.preset-save-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.preset-save-row { display: flex; gap: 8px; align-items: center; }
 .preset-save-row .settings-input { flex: 1; width: auto; }
 .preset-save-row .btn { flex-shrink: 0; }
 .preset-list { display: flex; flex-direction: column; gap: 6px; }
@@ -1743,3 +1756,47 @@ body {
 }
 .preset-name { font-size: 13px; }
 .preset-meta { flex: 1; font-size: 12px; color: var(--text-dim); }
+
+/* ---------- AI 设置：分组卡片 ---------- */
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.settings-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.settings-card-sub { font-size: 12px; color: var(--text-dim); }
+.settings-card .update-field { margin-top: 0; }
+.settings-card .settings-version { margin-top: 0; }
+
+/* ---------- AI 设置：吸底操作条 ---------- */
+.settings-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px -16px -20px;
+  padding: 12px 16px;
+  background: rgba(28, 31, 36, 0.92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-top: 1px solid var(--border);
+}
+.settings-actions .settings-message {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 0;
+  text-align: right;
+}
