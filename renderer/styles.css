@@ -102,29 +102,32 @@ body {
 /* ---------- Tab 栏 ---------- */
 #tab-bar {
   display: flex;
-  gap: 2px;
-  padding: 0 16px;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .tab-btn {
-  padding: 9px 16px;
+  padding: 7px 14px;
   background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
   color: var(--text-dim);
   font-size: 13px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 
 .tab-btn:hover { color: var(--text); }
 
 .tab-btn.active {
   color: var(--accent);
-  border-bottom-color: var(--accent);
+  background: rgba(78, 201, 176, 0.12);
+  border-color: rgba(78, 201, 176, 0.35);
+  box-shadow: 0 1px 6px rgba(78, 201, 176, 0.15);
   font-weight: 500;
 }
 
@@ -709,15 +712,15 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
-.tab-btn svg { opacity: 0.75; }
-.tab-btn:hover { background: rgba(255, 255, 255, 0.04); }
+.tab-btn svg { opacity: 0.75; transition: opacity 0.15s, filter 0.15s; }
+.tab-btn:hover { background: rgba(255, 255, 255, 0.05); }
+.tab-btn:hover svg { opacity: 0.95; }
+.tab-btn.active:hover { background: rgba(78, 201, 176, 0.16); }
 .tab-btn.active svg {
   opacity: 1;
   filter: drop-shadow(0 0 4px rgba(78, 201, 176, 0.6));
 }
-.tab-btn.active { text-shadow: 0 0 12px rgba(78, 201, 176, 0.35); }
 
 /* 输入框 */
 .settings-input, .settings-input:focus-visible {
