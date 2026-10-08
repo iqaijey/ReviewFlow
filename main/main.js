@@ -74,10 +74,10 @@ function createWindow() {
     width: (savedState && savedState.width) || 1440,
     height: (savedState && savedState.height) || 900,
     ...(savedState && savedState.x != null ? { x: savedState.x, y: savedState.y } : {}),
-    minWidth: 1100,
+    minWidth: 960,
     minHeight: 700,
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#1e1e1e',
+    backgroundColor: '#0d1117',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

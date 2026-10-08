@@ -7,17 +7,38 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header id="app-header">
-    <div class="header-left">
+  <aside id="sidebar">
+    <div class="sidebar-brand">
+      <svg class="sidebar-logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="1.5" y="1.5" width="21" height="21" rx="6"
+          fill="rgba(78, 201, 176, 0.14)" stroke="#4ec9b0"/>
+        <path d="M7 12.5l3.2 3.2L17 9" stroke="#4ec9b0"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
       <span class="app-title">ReviewFlow</span>
-      <span id="project-path" class="project-path">未选择项目</span>
     </div>
-    <div class="header-right">
-      <button id="btn-select-folder" class="btn btn-primary">选择项目文件夹</button>
-      <button id="btn-rescan" class="btn">重新扫描</button>
+    <nav id="tab-bar"></nav>
+    <div class="sidebar-footer">
+      <div id="project-path" class="project-path" title="点击选择最近项目">未选择项目</div>
+      <div class="sidebar-actions">
+        <button id="btn-select-folder" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          <span>选择项目</span>
+        </button>
+        <button id="btn-rescan" class="btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="23 4 23 10 17 10"/>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          <span>重新扫描</span>
+        </button>
+      </div>
     </div>
-  </header>
-  <nav id="tab-bar"></nav>
+  </aside>
   <main id="tab-content"></main>
   <script type="module" src="app.js"></script>
 </body>
