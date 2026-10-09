@@ -210,6 +210,8 @@ async function runOverviewBatches(cfg, state) {
   const planPrefix = state.planContext ? `${state.planContext}\n\n` : '';
   // 遗留问题清单放在用户消息开头，让各批与综合都能看到
   const pendingPrefix = state.pendingText ? `${state.pendingText}\n\n` : '';
+  // 上次评审结论，供对比「哪些已修复/仍存在/新引入」
+  const prevPrefix = state.prevText ? `${state.prevText}\n\n` : '';
   for (let i = state.nextIndex; i < batches.length; i += 1) {
     if (lane.pauseRequested) {
       lane.pauseRequested = false;
@@ -224,7 +226,7 @@ async function runOverviewBatches(cfg, state) {
       };
     }
     const label = batches.length > 1 ? `（第 ${i + 1}/${batches.length} 批）` : '';
-    const user = `${pendingPrefix}${planPrefix}以下是本次未提交的代码改动${label}（unified diff），请进行多角度评审：\n\n${batches[i].join('\n\n')}`;
+    const user = `${pendingPrefix}${planPrefix}${prevPrefix}以下是本次未提交的代码改动${label}（unified diff），请进行多角度评审：\n\n${batches[i].join('\n\n')}`;
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -244,12 +246,16 @@ async function runOverviewBatches(cfg, state) {
     const synthSystem = withProjectRules(withCustomPrompt(
       '你是一位资深代码评审专家。以下是针对同一批代码改动分批评审得到的多份评审结果，' +
       `请将它们去重、合并为一份完整评审，仍${overviewSectionsText(cfg, Boolean(state.planContext))}\n` +
-      (state.pendingText ? `${ISSUE_LIST_SECTION}\n${LEGACY_CHECK_SECTION}` : ISSUE_LIST_SECTION),
+      (state.pendingText ? `${ISSUE_LIST_SECTION}\n${LEGACY_CHECK_SECTION}` : ISSUE_LIST_SECTION) +
+      (state.prevText
+        ? '\n另外已提供上次评审的结论：请在「总结与建议」之前追加一节 ## 与上次对比，' +
+          '说明上次指出的问题本次是否已修复、哪些仍存在、本次改动新引入了什么问题。'
+        : ''),
       cfg,
     ), state.folder);
-    const { content, stats } = await chatWithStats(cfg, [
+      const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: synthSystem },
-      { role: 'user', content: `${pendingPrefix}${planPrefix}${combined}` },
+      { role: 'user', content: `${pendingPrefix}${planPrefix}${prevPrefix}${combined}` },
     ], { maxTokens: 4096, folder, kind: '整体分析', batch: '（综合结果）', batchIndex: batches.length, batchTotal: batches.length, runId, stream: true });
     markdown = content;
     state.statsList.push(stats);
@@ -265,7 +271,7 @@ function skipResources(files) {
   return files.filter((f) => !(f && f.resource));
 }
 
-async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '', planContext = '', pendingIssues = [], customDimensionsOverride = '' }) {
+async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '', planContext = '', pendingIssues = [], customDimensionsOverride = '', previousReview = '' }) {
   files = skipResources(files);
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可分析的改动');
@@ -285,14 +291,23 @@ async function analyzeOverview({ folder, files, runId = null, customPromptOverri
   const issueSuffix = pending.length
     ? `\n${ISSUE_LIST_SECTION}\n${LEGACY_CHECK_SECTION}`
     : `\n${ISSUE_LIST_SECTION}`;
+  // 上次评审结论：非空时注入各批 prompt，并要求追加「与上次对比」节
+  const prev = typeof previousReview === 'string' ? previousReview.trim() : '';
+  const prevSuffix = prev
+    ? '\n另外已提供上次评审的结论：请在「总结与建议」之前追加一节 ## 与上次对比，' +
+      '说明上次指出的问题本次是否已修复、哪些仍存在、本次改动新引入了什么问题。'
+    : '';
   const { batches, reviewed } = splitIntoBatches(folder, files);
   runId = ensureRunId(runId);
   const state = {
     kind: 'overview',
     folder,
     files,
-    system: withProjectRules(withCustomPrompt(buildOverviewSystem(cfg, Boolean(plan)), cfg), folder) + issueSuffix,
+    system: withProjectRules(withCustomPrompt(buildOverviewSystem(cfg, Boolean(plan)), cfg), folder) + issueSuffix + prevSuffix,
     planContext: plan,
+    prevText: prev
+      ? `上次评审的结论（供对比参考，不需要复述它）：\n${prev.length > 8000 ? `${prev.slice(0, 8000)}\n（过长已截断）` : prev}`
+      : '',
     pendingText: pending.length
       ? `上次评审遗留的待处理问题（请在「遗留问题核对」节逐条核对当前 diff 是否已修复）：\n${pending.map((t, i) => `${i + 1}. ${t}`).join('\n')}`
       : '',

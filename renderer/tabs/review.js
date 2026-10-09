@@ -572,12 +572,25 @@ export default {
     refreshPlanHint();
     bus.addEventListener('settings:saved', loadDimensions);
     const startBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '开始 AI 分析');
+    // 「对比上次评审」开关：开启且存在历史评审时，把最近一次评审结论带给 AI 做对比
+    const prevLabel = el('label', {
+      class: 'review-preset-toggle', title: '开启后，评审会带上最近一次评审的结论，追加「与上次对比」小节',
+      style: 'display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text-dim)',
+    });
+    const prevSwitch = el('input', { type: 'checkbox' });
+    prevSwitch.checked = localStorage.getItem('reviewPrevEnabled') === '1';
+    prevSwitch.addEventListener('change', () => {
+      localStorage.setItem('reviewPrevEnabled', prevSwitch.checked ? '1' : '0');
+    });
+    prevLabel.appendChild(prevSwitch);
+    prevLabel.appendChild(el('span', {}, '对比上次评审'));
     const runLink = el('button', {
       class: 'run-link', type: 'button', title: '查看当前运行 / 暂停与继续',
       onClick: () => ctx.showRunDetails(),
     }, '运行详情');
     toolbar.appendChild(chips);
     toolbar.appendChild(presetSelect);
+    toolbar.appendChild(prevLabel);
     toolbar.appendChild(startBtn);
     toolbar.appendChild(runLink);
     overallPanel.appendChild(toolbar);
@@ -764,6 +777,16 @@ export default {
           files: state.changes.files,
           runId,
         };
+        // 开启「对比上次评审」且有历史评审时，带上最近一次评审结论
+        if (prevSwitch.checked && typeof api.listReviews === 'function') {
+          try {
+            const history = await api.listReviews(state.folder);
+            const latest = Array.isArray(history) && history.length ? history[0] : null;
+            if (latest && typeof latest.markdown === 'string' && latest.markdown.trim()) {
+              payload.previousReview = latest.markdown;
+            }
+          } catch { /* 历史读取失败不影响本次评审 */ }
+        }
         const preset = activePreset();
         if (override) payload.customPromptOverride = override;
         else if (preset && typeof preset.customPrompt === 'string' && preset.customPrompt.trim()) {
