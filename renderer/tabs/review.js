@@ -744,6 +744,10 @@ export default {
       checklistItems = [];
       renderChecklist();
       setStatus(loadingNode());
+      const skippedResources = state.changes.files.filter((f) => f.resource).length;
+      if (skippedResources > 0) {
+        toast(`已跳过 ${skippedResources} 个资源文件（图片/资源目录等不参与评审）`);
+      }
       // API 后端流式输出：增量文本先以纯文本预览，结束后替换为渲染好的 markdown
       const runId = `run-${Date.now()}`;
       const streamBox = el('div', { class: 'stream-preview', style: 'white-space: pre-wrap' });
@@ -830,6 +834,7 @@ export default {
         return;
       }
       for (const file of state.changes.files) {
+        if (file.resource) continue; // 资源文件不参与评审
         const { add, del } = countChanges([file]);
         const card = el('div', { class: 'review-file-item' });
         const head = el('div', { class: 'review-file-head' });

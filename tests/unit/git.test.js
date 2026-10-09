@@ -101,3 +101,50 @@ test('parseDiff 空输入与非 diff 内容', () => {
   assert.deepStrictEqual(parseDiff(''), []);
   assert.deepStrictEqual(parseDiff('random text\nmore text'), []);
 });
+
+test('isResourcePath：识别图片/字体/资源目录，代码文件不误判', () => {
+  const { isResourcePath } = require('../../main/git');
+  for (const p of [
+    'Assets/Media.xcassets/profile/x.imageset/Contents.json',
+    'Assets/Media.xcassets/profile/x.imageset/bg@2x.png',
+    'res/logo.PNG',
+    'fonts/PingFang.woff2',
+    'lib/foo.dylib',
+    'doc/spec.pdf',
+  ]) {
+    assert.strictEqual(isResourcePath(p), true, p);
+  }
+  for (const p of [
+    'src/a.js',
+    'XCChat/Controllers/XCHomeViewController.m',
+    'package.json',
+    'src/config.json',
+    'src/svgParser.js',
+    'README.md',
+  ]) {
+    assert.strictEqual(isResourcePath(p), false, p);
+  }
+  assert.strictEqual(isResourcePath(''), false);
+  assert.strictEqual(isResourcePath(null), false);
+});
+
+test('parseDiff：资源文件被标记 resource，代码文件不标记', () => {
+  const diff = [
+    'diff --git a/src/a.js b/src/a.js',
+    '--- a/src/a.js',
+    '+++ b/src/a.js',
+    '@@ -1,1 +1,1 @@',
+    '-old',
+    '+new',
+    'diff --git a/Assets/Media.xcassets/x.imageset/Contents.json b/Assets/Media.xcassets/x.imageset/Contents.json',
+    '--- a/Assets/Media.xcassets/x.imageset/Contents.json',
+    '+++ b/Assets/Media.xcassets/x.imageset/Contents.json',
+    '@@ -1,1 +1,1 @@',
+    '-{}',
+    '+{}',
+  ].join('\n');
+  const files = parseDiff(diff);
+  assert.strictEqual(files.length, 2);
+  assert.strictEqual(files[0].resource, false);
+  assert.strictEqual(files[1].resource, true);
+});

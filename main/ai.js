@@ -240,9 +240,16 @@ async function runOverviewBatches(cfg, state) {
   return { markdown, stats: aggregateStats(state.statsList), paused: false };
 }
 
+// 过滤资源文件（图片/字体/资源目录等），不参与 AI 评审
+function skipResources(files) {
+  return files.filter((f) => !(f && f.resource));
+}
+
 async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '', planContext = '', pendingIssues = [], customDimensionsOverride = '' }) {
+  files = skipResources(files);
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可分析的改动');
+
   }
   let cfg = applyPromptOverride(await getSettings(), customPromptOverride);
   // 评审预设：本次生效的自定义维度覆盖（不写回设置）
@@ -286,6 +293,9 @@ async function analyzeOverview({ folder, files, runId = null, customPromptOverri
 
 async function analyzeFile({ folder, file, runId = null, planContext = '' }) {
   if (!file || !file.path) throw new Error('缺少要分析的文件');
+  if (file.resource) {
+    return { markdown: '该文件是资源文件（图片/字体/资源目录等），不参与 AI 评审。', stats: null };
+  }
   const cfg = await getSettings();
   const plan = normalizePlanContext(planContext);
   let text = fileToPromptText(folder, file);
@@ -339,6 +349,7 @@ async function runFullBatches(cfg, state) {
 
 // 完整讲解：分批逐文件讲透
 async function explainFull({ folder, files, runId = null, customPromptOverride = '', planContext = '' }) {
+  files = skipResources(files);
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有可讲解的改动');
   }

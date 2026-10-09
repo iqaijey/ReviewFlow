@@ -215,7 +215,17 @@ function stripPrefix(p) {
  * @property {string} status
  * @property {DiffHunk[]} hunks
  * @property {string[]} classes
+ * @property {boolean} [resource]
  */
+
+// 资源文件：图片/字体/媒体/资源目录等，不参与 AI 评审
+const RESOURCE_RE = /\.(png|jpe?g|gif|webp|svg|ico|icns|bmp|tiff?|mp[34]|wav|aac|ttf|otf|woff2?|eot|pdf|zip|gz|tar|a|so|dylib|jar|car|lottie)$/i;
+const RESOURCE_DIR_RE = /\.(xcassets|imageset|appiconset|launchimage|colorset|dataset)\//i;
+
+function isResourcePath(p) {
+  if (typeof p !== 'string' || !p) return false;
+  return RESOURCE_RE.test(p) || RESOURCE_DIR_RE.test(p + '/');
+}
 
 function parseDiff(text) {
   const files = [];
@@ -306,6 +316,7 @@ function parseDiff(text) {
     }
   }
   if (cur) files.push(cur);
+  for (const f of files) f.resource = isResourcePath(f.path);
   return files;
 }
 
@@ -473,4 +484,4 @@ function extractClasses(folder, file) {
   }));
 }
 
-module.exports = { getChanges, getBranches, getCommits, parseDiff };
+module.exports = { getChanges, getBranches, getCommits, parseDiff, isResourcePath };

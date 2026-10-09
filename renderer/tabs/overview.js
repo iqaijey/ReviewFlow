@@ -423,15 +423,21 @@ export default {
           info.appendChild(chips);
         }
         item.appendChild(info);
-        const aiBtn = el('button', {
-          class: 'read-btn', type: 'button', title: '在「多角度 Review」中逐文件分析',
-        }, 'AI');
-        aiBtn.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          state.pendingAnalyzeFile = file;
-          bus.dispatchEvent(new CustomEvent('file:analyze'));
-        });
-        item.appendChild(aiBtn);
+        if (file.resource) {
+          item.appendChild(el('span', {
+            class: 'status-badge', title: '资源文件不参与 AI 评审',
+          }, '资源'));
+        } else {
+          const aiBtn = el('button', {
+            class: 'read-btn', type: 'button', title: '在「多角度 Review」中逐文件分析',
+          }, 'AI');
+          aiBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            state.pendingAnalyzeFile = file;
+            bus.dispatchEvent(new CustomEvent('file:analyze'));
+          });
+          item.appendChild(aiBtn);
+        }
         const readBtn = el('button', { class: 'read-btn', type: 'button' },
           isRead ? '取消已读' : '已读');
         readBtn.addEventListener('click', (ev) => {
