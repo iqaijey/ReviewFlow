@@ -660,11 +660,10 @@ input:focus, select:focus, textarea:focus {
 
 /* ---------- AI 设置 ---------- */
 .settings-form {
+  flex: 1;
   padding: 20px;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
-  gap: 16px;
-  align-items: start;
+  columns: 2;
+  column-gap: 16px;
 }
 .settings-field { display: flex; flex-direction: column; gap: 6px; }
 .settings-label { color: var(--text-dim); }
@@ -1823,6 +1822,8 @@ body {
   flex-direction: column;
   gap: 14px;
   padding: 16px 18px 18px;
+  margin-bottom: 16px;
+  break-inside: avoid;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1842,7 +1843,6 @@ body {
   position: sticky;
   bottom: 0;
   z-index: 5;
-  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1970,3 +1970,18 @@ body {
   .sidebar-actions .btn { padding: 4px 0; }
   .sidebar-actions .btn span { display: none; }
 }
+
+/* ---------- AI 设置：窄窗口回单列（内容区 < 960px） ---------- */
+@media (max-width: 1160px) {
+  .settings-form { columns: 1; }
+}
+
+/* ---------- 空态撑满内容区（review / explain / fullExplain 共用） ---------- */
+.review-status.status-fill, .explain-status.status-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.status-fill .empty-state { flex: 1; }

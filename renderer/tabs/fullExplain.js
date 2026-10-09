@@ -270,8 +270,9 @@ export default {
       }
     });
 
-    const setStatus = (node) => {
+    const setStatus = (node, fill) => {
       statusBox.textContent = '';
+      statusBox.classList.toggle('status-fill', !!fill);
       if (node) statusBox.appendChild(node);
     };
 
@@ -293,11 +294,14 @@ export default {
         startBtn.disabled = true;
         if (!mdBox.firstChild) {
           setStatus(emptyState('暂无可讲解的改动',
-            '点击左下角「选择项目」选择项目文件夹，并确保存在改动'));
+            '点击左下角「选择项目」选择项目文件夹，并确保存在改动'), true);
         }
         return;
       }
       startBtn.disabled = running;
+      if (!running && !mdBox.firstChild) {
+        setStatus(emptyState('准备就绪', '点击「开始完整讲解」逐块讲透当前改动'), true);
+      }
     };
 
     const run = async () => {

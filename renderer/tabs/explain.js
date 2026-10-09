@@ -67,8 +67,9 @@ export default {
     container.appendChild(historyTitle);
     container.appendChild(historyList);
 
-    const setStatus = (node) => {
+    const setStatus = (node, fill) => {
       statusBox.textContent = '';
+      statusBox.classList.toggle('status-fill', !!fill);
       if (node) statusBox.appendChild(node);
     };
 
@@ -77,7 +78,7 @@ export default {
       resultBox.textContent = '';
       historyTitle.style.display = 'none';
       setStatus(emptyState('还没有选中要解析的改动',
-        '在「改动总览」中点击一行改动，拖动或 ⌥+点击可框选多行'));
+        '在「改动总览」中点击一行改动，拖动或 ⌥+点击可框选多行'), true);
     };
 
     // 统一成行号标注

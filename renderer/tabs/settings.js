@@ -628,9 +628,10 @@ export default {
     actions.appendChild(saveBtn);
     actions.appendChild(testBtn);
     actions.appendChild(messageBox);
-    form.appendChild(actions);
 
+    // 吸底操作条不进 multi-column 流（其中 sticky 不可靠），作为 form 的同级兄弟
     container.appendChild(form);
+    container.appendChild(actions);
 
     api.getSettings().then((s) => {
       const merged = { ...DEFAULTS, ...(s || {}) };
