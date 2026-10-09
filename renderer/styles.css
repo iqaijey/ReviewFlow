@@ -2013,10 +2013,10 @@ body {
   flex-shrink: 0;
   display: inline-flex;
   gap: 4px;
-  opacity: 0;
+  opacity: 0.45;
   transition: opacity 0.15s;
 }
-/* hover 浮现；追问面板展开或已有标记时常显 */
+/* 默认淡显（可发现），hover/展开追问/已有标记时全亮 */
 .review-result > h2:hover .section-tools,
 .review-result > h2.tools-open .section-tools,
 .section-tools.has-mark { opacity: 1; }
