@@ -13,6 +13,23 @@ function getCurrentRun() {
       startedAt: state.pausedState.pausedAt,
     };
   }
+  // 分批循环的批间微间隙：上一批 currentRun 已清空、下一批尚未登记。
+  // 返回占位运行态，避免「运行详情」轮询在这一瞬落入「无运行」分支并停掉刷新。
+  if (state.batchRunActive) {
+    return {
+      kind: '分批运行',
+      batch: '批间切换中，自动连续执行，无需操作…',
+      backend: '',
+      model: '',
+      effort: '',
+      command: '',
+      promptChars: 0,
+      promptText: '',
+      startedAt: Date.now(),
+      batchIndex: null,
+      batchTotal: null,
+    };
+  }
   return null;
 }
 

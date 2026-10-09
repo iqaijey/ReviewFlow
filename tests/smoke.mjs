@@ -470,9 +470,9 @@ async function main() {
   };
   await cdp.eval(`window.autoReview.saveSettings(${JSON.stringify(mockSettings)})`);
 
-  // 追加一个大文件改动并重新扫描，使整体分析分成多批（暂停只在批间生效）
+  // 追加一个大文件改动并重新扫描，使整体分析分成多批（暂停只在批间生效；分批阈值 40000 字符，需超过）
   const bigLines = [];
-  for (let i = 0; i < 260; i += 1) {
+  for (let i = 0; i < 700; i += 1) {
     bigLines.push(`export const bigConst${i} = 'smoke-padding-value-${i}-aaaaaaaaaaaaaaaaaaaa';`);
   }
   fs.writeFileSync(path.join(repo, 'src', 'bigModule.js'), `${bigLines.join('\n')}\n`);

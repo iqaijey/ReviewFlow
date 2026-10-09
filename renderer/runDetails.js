@@ -169,7 +169,7 @@ export function createRunDetails(ctx) {
       }
       if (batchTotal > 1) {
         progressRowLine.style.display = '';
-        progressText.textContent = `第 ${batchIndex}/${batchTotal} 批`;
+        progressText.textContent = `自动分批 ${batchIndex}/${batchTotal} · 自动连续执行，无需操作`;
         const percent = Math.max(0, Math.min(100, (batchIndex / batchTotal) * 100));
         progressBar.style.width = `${percent}%`;
       } else {

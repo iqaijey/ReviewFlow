@@ -1985,3 +1985,69 @@ body {
   padding: 0;
 }
 .status-fill .empty-state { flex: 1; }
+
+/* ==================== AI 设置：排版修复（后置覆盖） ==================== */
+/* 顶部裁切根因：.settings-form 以 flex:1 作为滚动容器的 flex 项、同时承载
+   multi-column 分栏，Chromium 对 flex 项内分栏的高度/碎片计算在重排
+   （缩放窗口、切换接入方式、切 tab）后不可靠，可能裁切列内容或让内容溢出
+   表单盒（溢出部分不计入滚动高度，滚到底也看不见、被吸底条盖住）；
+   且 form 自带的 20px padding 与 .tab-panel 的 20px 叠加成 40px，
+   与按 -20px 负 margin 对齐容器 padding 的吸底操作条错位。
+   修复：form 回归普通文档流（去掉 flex 拉伸与重复 padding）；
+   操作条改用 margin-top:auto——内容不足一屏时吸底，超高时自然跟在内容尾部，
+   滚到底时最后一张卡片完整露出、不被遮挡。 */
+.settings-form { flex: none; padding: 0; }
+/* 操作条改为 margin-top:auto 吸底；底负 margin 去掉，改由容器 padding-bottom:0 让它贴底，
+   避免「负 margin 抵消 padding」导致的条下 20px 死区与卡片底边被压 */
+.settings-actions { margin: auto -20px 0; }
+.tab-panel[data-tab-id="settings"] { padding-bottom: 0; }
+/* 「暂无预设」的 .empty-hint 带 height:100%/min-height:220px（为撑满空态面板设计），
+   在多列分栏里会把评审预设卡撑得异常高、甚至超出列高撑破表单盒，设置页内还原为紧凑行 */
+.settings-form .empty-hint { min-height: 0; height: auto; padding: 12px; }
+
+/* ==================== 多角度 Review：维度小节操作条（追问 / 有用 / 没用） ==================== */
+/* 只作用于整体分析结果的顶层 h2（追问回答里的 h2 不受影响） */
+.review-result > h2 { display: flex; align-items: center; gap: 8px; }
+.section-tools {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+/* hover 浮现；追问面板展开或已有标记时常显 */
+.review-result > h2:hover .section-tools,
+.review-result > h2.tools-open .section-tools,
+.section-tools.has-mark { opacity: 1; }
+.section-tool {
+  padding: 1px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.section-tool:hover {
+  color: var(--accent);
+  border-color: rgba(78, 201, 176, 0.35);
+  background: rgba(78, 201, 176, 0.08);
+}
+.section-tool.marked {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(78, 201, 176, 0.12);
+}
+/* 维度追问容器：独立挂在小节正文之下，不进入导出内容 */
+.section-follow {
+  margin: 4px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.section-follow .explain-follow-item:last-child { margin-bottom: 0; }
+.section-follow .explain-follow-form { margin-top: 8px; }

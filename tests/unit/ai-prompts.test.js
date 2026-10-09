@@ -48,8 +48,8 @@ test('splitIntoBatches 小文件合并进同一批', () => {
 });
 
 test('splitIntoBatches 按累计长度分批，文件不拆半', () => {
-  // 每个文件约 2600 字符，10000 限制下每批最多 3 个
-  const bigLine = 'x'.repeat(2500);
+  // 每个文件约 10030 字符，40000 限制下每批最多 3 个
+  const bigLine = 'x'.repeat(10000);
   const files = Array.from({ length: 5 }, (_, i) =>
     makeFile(`f${i}.js`, null, {
       hunks: [{ header: '@@ h @@', lines: [{ type: 'add', content: bigLine }] }],
@@ -61,13 +61,13 @@ test('splitIntoBatches 按累计长度分批，文件不拆半', () => {
   assert.strictEqual(batches[0].length, 3);
   assert.strictEqual(batches[1].length, 2);
   for (const batch of batches) {
-    assert.ok(batch.join('\n').length <= 10000 + 1000); // 单批不超上限太多（批内累加受控）
+    assert.ok(batch.join('\n').length <= 40000 + 11000); // 单批不超上限太多（批内累加受控）
   }
 });
 
 test('splitIntoBatches 单文件超限单独成批并截断', () => {
   const huge = makeFile('huge.js', null, {
-    hunks: [{ header: '@@ h @@', lines: [{ type: 'add', content: 'y'.repeat(20000) }] }],
+    hunks: [{ header: '@@ h @@', lines: [{ type: 'add', content: 'y'.repeat(50000) }] }],
   });
   const small = makeFile('small.js');
   const { batches, reviewed } = prompts.splitIntoBatches(tmpDir, [huge, small]);
@@ -76,11 +76,12 @@ test('splitIntoBatches 单文件超限单独成批并截断', () => {
   const hugeBatch = batches.find((b) => b.length === 1 && b[0].includes('huge.js'));
   assert.ok(hugeBatch);
   assert.ok(hugeBatch[0].includes('(diff 过长已截断)'));
-  assert.ok(hugeBatch[0].length <= 10000 + 30);
+  assert.ok(hugeBatch[0].length <= 40000 + 30);
 });
 
 test('splitIntoBatches 最多 6 批，溢出文件不计入 reviewed', () => {
-  const bigLine = 'z'.repeat(2500);
+  // 每个文件约 9030 字符，40000 限制下每批 4 个，30 个文件在 6 批内放不下
+  const bigLine = 'z'.repeat(9000);
   const files = Array.from({ length: 30 }, (_, i) =>
     makeFile(`f${i}.js`, null, {
       hunks: [{ header: '@@ h @@', lines: [{ type: 'add', content: bigLine }] }],

@@ -198,6 +198,166 @@ export default {
     // 整体分析每次运行递增，用于丢弃过期追问结果
     let runSeq = 0;
 
+    // 当前整体分析结果的维度标记：{ [小节标题]: 'useful' | 'useless' }，
+    // 随评审历史持久化在 stats.sectionFeedback；重新分析时重置
+    /** @type {Record<string, 'useful' | 'useless'>} */
+    let sectionFeedback = {};
+    /** @type {{ title: string, markdown: string, stats: any } | null} */
+    let currentResult = null;
+
+    // 标记回写历史：review:save 没有更新接口，标记变化时重存一条同 title+markdown
+    // 的记录；历史列表渲染时按 title+markdown 去重，只展示最新一条
+    const persistSectionFeedback = () => {
+      if (!currentResult || !state.folder || typeof api.saveReview !== 'function') return;
+      const { title, markdown, stats } = currentResult;
+      api.saveReview({
+        folder: state.folder,
+        title,
+        markdown,
+        stats: { ...(stats || {}), sectionFeedback: { ...sectionFeedback } },
+      }).catch(() => { /* 标记写盘失败不影响界面 */ });
+    };
+
+    // 维度追问：整体结论 + 本小节正文作为上下文，回答渲染在该节下方，可多轮追问
+    const buildSectionFollowUp = (markdown, title) => {
+      const seqAtBuild = runSeq;
+      const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const sectionMd = extractSection(markdown, escaped) || '';
+      // 前两条固定为整体结论与本小节正文，后续轮次追加，最多保留最近 10 轮
+      const baseQA = [
+        { question: '（整体评审结论）', answer: markdown },
+        { question: `（聚焦小节：${title}）`, answer: sectionMd },
+      ];
+      let previousQA = [...baseQA];
+      const box = el('div', { class: 'explain-follow section-follow' });
+      const list = el('div', { class: 'explain-follow-list' });
+      const form = el('div', { class: 'explain-follow-form' });
+      const input = el('input', {
+        class: 'settings-input', type: 'text',
+        placeholder: `就「${title}」继续提问…`, spellcheck: 'false',
+      });
+      const askBtn = el('button', { class: 'btn', type: 'button' }, '提问');
+      form.appendChild(input);
+      form.appendChild(askBtn);
+      box.appendChild(list);
+      box.appendChild(form);
+
+      let asking = false;
+      const submit = async () => {
+        const question = input.value.trim();
+        if (!question || asking || !state.changes) return;
+        asking = true;
+        input.disabled = true;
+        askBtn.disabled = true;
+        const item = el('div', { class: 'explain-follow-item' });
+        item.appendChild(el('div', { class: 'explain-follow-q' }, `> ${question}`));
+        const loading = el('div', { class: 'explain-loading' });
+        loading.appendChild(el('span', { class: 'spinner' }));
+        loading.appendChild(el('span', {}, 'AI 思考中，请稍候…'));
+        item.appendChild(loading);
+        list.appendChild(item);
+        const runId = `run-${Date.now()}`;
+        try {
+          const { markdown: answer, stats } = await api.reviewFollowUp({
+            folder: state.folder,
+            files: state.changes.files,
+            previousQA: [...previousQA],
+            question,
+            runId,
+          });
+          if (seqAtBuild !== runSeq) return; // 已重新分析，丢弃过期回答
+          loading.remove();
+          const mdNode = el('div', { class: 'md' });
+          mdNode.innerHTML = renderMarkdown(answer);
+          item.appendChild(mdNode);
+          item.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
+          previousQA.push({ question, answer });
+          if (previousQA.length > baseQA.length + 10) {
+            previousQA = [...baseQA, ...previousQA.slice(-10)];
+          }
+          input.value = '';
+        } catch (err) {
+          if (seqAtBuild !== runSeq) return;
+          loading.remove();
+          if (errText(err).includes('已被用户终止')) {
+            item.appendChild(el('div', { class: 'empty-hint' }, '已终止'));
+          } else {
+            item.appendChild(el('div', { class: 'error-text' },
+              `追问失败：${errText(err)}`));
+          }
+        } finally {
+          asking = false;
+          input.disabled = false;
+          askBtn.disabled = false;
+        }
+      };
+      askBtn.addEventListener('click', submit);
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') submit();
+      });
+      return box;
+    };
+
+    // 渲染完成后给每个 h2 小节注入操作条（追问 / 有用 / 没用）。
+    // 流式期间不注入（只在整体分析完成后调用）；追问容器独立挂在节下，
+    // 导出走原始 markdown 字符串，这些注入的 DOM 不会进入导出内容
+    const injectSectionTools = (markdown) => {
+      if (typeof api.reviewFollowUp !== 'function') return;
+      for (const h2 of mdBox.querySelectorAll(':scope > h2')) {
+        const title = (h2.textContent || '').trim(); // 注入按钮前先取纯标题
+        const followBox = buildSectionFollowUp(markdown, title);
+        followBox.style.display = 'none';
+
+        const tools = el('span', { class: 'section-tools' });
+        const askBtn = el('button', {
+          class: 'section-tool', type: 'button', title: '就这一节继续追问',
+        }, '追问');
+        const usefulBtn = el('button', {
+          class: 'section-tool', type: 'button', title: '帮助改进评审维度',
+        }, '有用');
+        const uselessBtn = el('button', {
+          class: 'section-tool', type: 'button', title: '帮助改进评审维度',
+        }, '没用');
+        const syncMarkUI = () => {
+          const v = sectionFeedback[title];
+          usefulBtn.classList.toggle('marked', v === 'useful');
+          uselessBtn.classList.toggle('marked', v === 'useless');
+          tools.classList.toggle('has-mark', !!v);
+        };
+        askBtn.addEventListener('click', () => {
+          const opening = followBox.style.display === 'none';
+          followBox.style.display = opening ? '' : 'none';
+          h2.classList.toggle('tools-open', opening);
+          const inputEl = opening ? followBox.querySelector('input') : null;
+          if (inputEl) inputEl.focus();
+        });
+        usefulBtn.addEventListener('click', () => {
+          if (sectionFeedback[title] === 'useful') delete sectionFeedback[title];
+          else sectionFeedback[title] = 'useful';
+          syncMarkUI();
+          persistSectionFeedback();
+        });
+        uselessBtn.addEventListener('click', () => {
+          if (sectionFeedback[title] === 'useless') delete sectionFeedback[title];
+          else sectionFeedback[title] = 'useless';
+          syncMarkUI();
+          persistSectionFeedback();
+        });
+        tools.appendChild(askBtn);
+        tools.appendChild(usefulBtn);
+        tools.appendChild(uselessBtn);
+        h2.appendChild(tools);
+        syncMarkUI();
+        // 追问容器挂在小节正文之后（下一个 h2 之前，没有则挂在结果末尾）
+        let next = h2.nextSibling;
+        while (next && !(next.nodeType === 1 && /** @type {Element} */ (next).tagName === 'H2')) {
+          next = next.nextSibling;
+        }
+        if (next) mdBox.insertBefore(followBox, next);
+        else mdBox.appendChild(followBox);
+      }
+    };
+
     // 追问区：基于本次整体分析结果继续提问，最多保留最近 10 轮（首条固定为初始结果）
     const buildFollowUp = (markdown) => {
       if (typeof api.reviewFollowUp !== 'function') return null;
@@ -579,6 +739,8 @@ export default {
       runSeq++;
       startBtn.disabled = true;
       mdBox.textContent = '';
+      sectionFeedback = {};
+      currentResult = null;
       checklistItems = [];
       renderChecklist();
       setStatus(loadingNode());
@@ -622,6 +784,9 @@ export default {
         const { markdown, stats } = await api.analyzeOverview(payload);
         setStatus(null);
         mdBox.innerHTML = renderMarkdown(markdown);
+        sectionFeedback = {};
+        currentResult = { title: autoTitle(), markdown, stats };
+        injectSectionTools(markdown);
         // 清单解析/写盘失败不影响评审结果展示
         try { await syncChecklist(markdown); } catch { /* 忽略 */ }
         mdBox.appendChild(statsLine(stats));
@@ -632,7 +797,8 @@ export default {
         // 历史保存失败不影响结果展示
         try {
           await api.saveReview({
-            folder: state.folder, title: autoTitle(), stats, markdown,
+            folder: state.folder, title: currentResult.title, markdown,
+            stats: { ...(stats || {}), sectionFeedback: { ...sectionFeedback } },
           });
         } catch { /* 忽略 */ }
       } catch (err) {
@@ -740,6 +906,14 @@ export default {
           `加载历史失败：${errText(err)}`));
         return;
       }
+      // 维度标记变化会重存同 title+markdown 的记录，列表按时间倒序，只展示最新一条
+      const seenEntries = new Set();
+      reviews = (Array.isArray(reviews) ? reviews : []).filter((entry) => {
+        const key = `${entry && entry.title}\n${entry && entry.markdown}`;
+        if (seenEntries.has(key)) return false;
+        seenEntries.add(key);
+        return true;
+      });
       if (!reviews || !reviews.length) {
         historyPanel.appendChild(emptyState('暂无历史评审记录',
           '完成一次整体分析后会自动保存到这里'));
