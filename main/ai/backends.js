@@ -1,5 +1,5 @@
 const state = require('./state');
-const { timeoutMs, cancelledError } = require('./runControl');
+const { timeoutMs, cancelledError, ensureLane } = require('./runControl');
 
 // 解析 OpenAI 兼容的 SSE 流式响应：逐行读取 data: 事件，累加 delta.content，
 // 每收到一段就把累计全文推给渲染进程；usage 取流末尾带 usage 的 chunk（stream_options.include_usage）
@@ -42,6 +42,7 @@ async function readSseStream(resp, runId) {
 // OpenAI 兼容 API 后端：reasoning_effort / temperature 不被支持（400）时去掉对应参数重试；
 // stream 时走 SSE 逐段推送。返回最终生效的 appliedEffort 供 stats/运行详情使用。
 async function chatViaApi(cfg, messages, { maxTokens, temperature, stream, runId }) {
+  const lane = ensureLane(runId);
   const url = `${String(cfg.baseUrl || '').replace(/\/+$/, '')}/chat/completions`;
   const headers = {
     'Content-Type': 'application/json',
@@ -61,7 +62,7 @@ async function chatViaApi(cfg, messages, { maxTokens, temperature, stream, runId
     body.stream_options = { include_usage: true };
   }
   const controller = new AbortController();
-  state.currentCancel = () => controller.abort();
+  lane.currentCancel = () => controller.abort();
   const send = () => fetch(url, {
     method: 'POST',
     headers,

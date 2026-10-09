@@ -79,8 +79,8 @@ test('splitIntoBatches 单文件超限单独成批并截断', () => {
   assert.ok(hugeBatch[0].length <= 40000 + 30);
 });
 
-test('splitIntoBatches 最多 6 批，溢出文件不计入 reviewed', () => {
-  // 每个文件约 9030 字符，40000 限制下每批 4 个，30 个文件在 6 批内放不下
+test('splitIntoBatches 不设批数上限，所有文件都计入 reviewed', () => {
+  // 每个文件约 9030 字符，40000 限制下每批 4 个，30 个文件需要 8 批
   const bigLine = 'z'.repeat(9000);
   const files = Array.from({ length: 30 }, (_, i) =>
     makeFile(`f${i}.js`, null, {
@@ -88,8 +88,8 @@ test('splitIntoBatches 最多 6 批，溢出文件不计入 reviewed', () => {
     }),
   );
   const { batches, reviewed } = prompts.splitIntoBatches(tmpDir, files);
-  assert.ok(batches.length <= 6);
-  assert.ok(reviewed < files.length);
+  assert.ok(batches.length >= 7);
+  assert.strictEqual(reviewed, files.length);
 });
 
 // ---------- buildContext ----------
@@ -136,15 +136,15 @@ test('buildContext 忽略未改动或行号非法的类', () => {
   fs.unlinkSync(path.join(tmpDir, 'ctx2.js'));
 });
 
-test('buildContext 超长定义块截断到 200 行', () => {
-  const src = Array.from({ length: 300 }, (_, i) => `l${i + 1}`).join('\n');
+test('buildContext 超长定义块截断到 400 行', () => {
+  const src = Array.from({ length: 500 }, (_, i) => `l${i + 1}`).join('\n');
   fs.writeFileSync(path.join(tmpDir, 'long.js'), src);
   const file = makeFile('long.js', null, {
-    classes: [{ name: 'Big', changed: true, startLine: 1, endLine: 300 }],
+    classes: [{ name: 'Big', changed: true, startLine: 1, endLine: 500 }],
   });
   const out = prompts.buildContext(tmpDir, file);
   assert.ok(out.includes('（定义过长已截断）'));
-  assert.ok(!out.includes('l201'));
+  assert.ok(!out.includes('l401'));
   fs.unlinkSync(path.join(tmpDir, 'long.js'));
 });
 

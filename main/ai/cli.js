@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const state = require('./state');
-const { timeoutMs, cancelledError, killProcessGroup } = require('./runControl');
+const { timeoutMs, cancelledError, killProcessGroup, ensureLane } = require('./runControl');
 
 const CLI_CANDIDATES = {
   opencode: ['/opt/homebrew/bin/opencode', '/usr/local/bin/opencode'],
@@ -81,7 +81,8 @@ function cliCmdLabel(backend, cfg, folder) {
 
 // 通过本机 CLI（opencode / kimi / codex）完成对话，使用各 CLI 已配置好的模型与登录态。
 // 注意：直接 execFile 这些二进制会挂起（疑似其进程/会话检测），必须经 bash 启动。
-function chatViaCli(backend, cfg, messages, folder) {
+function chatViaCli(backend, cfg, messages, folder, runId) {
+  const lane = ensureLane(runId);
   if (!resolveCliBin(backend)) {
     const guide = backend === 'codex'
       ? '未找到 codex 命令行，请先安装（brew install codex）并运行 codex login'
@@ -149,7 +150,7 @@ function chatViaCli(backend, cfg, messages, folder) {
         timedOut = true;
         killProcessGroup(child);
       }, cliTimeout);
-      state.currentCancel = () => {
+      lane.currentCancel = () => {
         cancelledByUser = true;
         killProcessGroup(child);
       };

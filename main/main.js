@@ -338,13 +338,15 @@ function registerIpcHandlers() {
 
   ipcMain.handle('ai:getCurrentRun', async () => ai.getCurrentRun());
 
-  ipcMain.handle('ai:cancel', async () => ai.cancelRun());
+  ipcMain.handle('ai:listRuns', async () => ai.getRuns());
 
-  ipcMain.handle('ai:pause', async () => ai.pauseRun());
+  ipcMain.handle('ai:cancel', async (_event, runId) => ai.cancelRun(runId));
 
-  ipcMain.handle('ai:resume', async () => {
+  ipcMain.handle('ai:pause', async (_event, runId) => ai.pauseRun(runId));
+
+  ipcMain.handle('ai:resume', async (_event, runId) => {
     try {
-      return await ai.resumeRun();
+      return await ai.resumeRun(runId);
     } catch (err) {
       throw new Error(`继续运行失败：${err.message}`);
     }

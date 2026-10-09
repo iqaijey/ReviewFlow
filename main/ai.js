@@ -1,8 +1,18 @@
 const fs = require('fs');
 const { getSettings } = require('./settings');
 const { readKimiConfig, readCodexConfig } = require('./cliConfig');
-const runState = require('./ai/state');
-const { getCurrentRun, pauseRun, cancelRun, setChunkSender } = require('./ai/runControl');
+const {
+  getRuns,
+  getCurrentRun,
+  pauseRun,
+  cancelRun,
+  setChunkSender,
+  ensureRunId,
+  ensureLane,
+  resolveLane,
+  maybeCleanupLane,
+  touchLane,
+} = require('./ai/runControl');
 const { cliCmdLabel, chatViaCli, listOpencodeModels, listCodexModels } = require('./ai/cli');
 const { chatViaApi } = require('./ai/backends');
 const {
@@ -34,6 +44,10 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
     }
     return String(m.content || '');
   }).join('\n\n');
+  // 并发跑道：渲染进程传入的 runId 直接沿用，未传时生成；同 runId 的批次共享一条跑道
+  if (!runId) runId = ensureRunId(null);
+  const lane = ensureLane(runId);
+  touchLane(lane);
   if (cfg.backend === 'opencode' || cfg.backend === 'kimi' || cfg.backend === 'codex') {
     // 模型与思考强度以 CLI 实际配置为准：未覆盖时读取各 CLI 的 config.toml
     let model = '默认模型';
@@ -50,13 +64,13 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
       model = cfg.codexModel || codexCfg.defaultModel || '默认模型';
       effort = cfg.reasoningEffort || codexCfg.effort || '';
     }
-    runState.currentRun = {
+    lane.currentRun = {
       kind, batch, batchIndex, batchTotal, backend: cfg.backend, model, effort,
       command: cliCmdLabel(cfg.backend, cfg, folder),
       promptChars: promptText.length, promptText, startedAt,
     };
     try {
-      const content = await chatViaCli(cfg.backend, cfg, messages, folder);
+      const content = await chatViaCli(cfg.backend, cfg, messages, folder, runId);
       return {
         content,
         stats: {
@@ -69,13 +83,14 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
         },
       };
     } finally {
-      runState.currentRun = null;
-      runState.currentCancel = null;
+      lane.currentRun = null;
+      lane.currentCancel = null;
+      maybeCleanupLane(runId);
     }
   }
   if (!cfg.apiKey) throw new Error('请先在「AI 设置」中配置 API Key');
   const url = `${String(cfg.baseUrl || '').replace(/\/+$/, '')}/chat/completions`;
-  runState.currentRun = {
+  lane.currentRun = {
     kind, batch, batchIndex, batchTotal, backend: 'api', model: cfg.model, effort: cfg.reasoningEffort || '',
     command: `POST ${url}`,
     promptChars: promptText.length, promptText, startedAt,
@@ -94,8 +109,9 @@ async function chatWithStats(settings, messages, { maxTokens = 1024, temperature
       },
     };
   } finally {
-    runState.currentRun = null;
-    runState.currentCancel = null;
+    lane.currentRun = null;
+    lane.currentCancel = null;
+    maybeCleanupLane(runId);
   }
 }
 
@@ -127,20 +143,22 @@ function aggregateStats(list) {
   };
 }
 
-// 从 pausedState 的 nextIndex 继续原分批循环；无暂停状态返回 null
-async function resumeRun() {
-  const state = runState.pausedState;
+// 从指定跑道的 pausedState 的 nextIndex 继续原分批循环；无暂停状态返回 null
+async function resumeRun(runId) {
+  const lane = resolveLane(runId);
+  const state = lane && lane.pausedState;
   if (!state) return null;
-  runState.pausedState = null;
+  lane.pausedState = null;
   const cfg = await getSettings();
-  runState.batchRunActive = true;
+  lane.batchRunActive = true;
   try {
     if (state.kind === 'full') {
       return await runFullBatches(cfg, state);
     }
     return await runOverviewBatches(cfg, state);
   } finally {
-    runState.batchRunActive = false;
+    lane.batchRunActive = false;
+    maybeCleanupLane(state.runId);
   }
 }
 
@@ -188,15 +206,17 @@ const LEGACY_CHECK_SECTION =
 // 正常跑完后多批结果再综合（续跑走到这里同样执行综合）
 async function runOverviewBatches(cfg, state) {
   const { folder, batches, system, runId } = state;
+  const lane = ensureLane(runId);
   const planPrefix = state.planContext ? `${state.planContext}\n\n` : '';
   // 遗留问题清单放在用户消息开头，让各批与综合都能看到
   const pendingPrefix = state.pendingText ? `${state.pendingText}\n\n` : '';
   for (let i = state.nextIndex; i < batches.length; i += 1) {
-    if (runState.pauseRequested) {
-      runState.pauseRequested = false;
+    if (lane.pauseRequested) {
+      lane.pauseRequested = false;
       state.nextIndex = i;
       state.pausedAt = Date.now();
-      runState.pausedState = state;
+      lane.pausedState = state;
+      touchLane(lane);
       return {
         markdown: `${state.batchResults.join('\n\n')}\n\n（已暂停，可在「运行详情」中继续）`,
         stats: aggregateStats(state.statsList),
@@ -266,6 +286,7 @@ async function analyzeOverview({ folder, files, runId = null, customPromptOverri
     ? `\n${ISSUE_LIST_SECTION}\n${LEGACY_CHECK_SECTION}`
     : `\n${ISSUE_LIST_SECTION}`;
   const { batches, reviewed } = splitIntoBatches(folder, files);
+  runId = ensureRunId(runId);
   const state = {
     kind: 'overview',
     folder,
@@ -283,11 +304,13 @@ async function analyzeOverview({ folder, files, runId = null, customPromptOverri
     runId,
     pausedAt: null,
   };
-  runState.batchRunActive = true;
+  const lane = ensureLane(runId);
+  lane.batchRunActive = true;
   try {
     return await runOverviewBatches(cfg, state);
   } finally {
-    runState.batchRunActive = false;
+    lane.batchRunActive = false;
+    maybeCleanupLane(runId);
   }
 }
 
@@ -317,13 +340,15 @@ async function analyzeFile({ folder, file, runId = null, planContext = '' }) {
 // 完整讲解分批循环：各批结果直接拼接（每批内容互不重叠，无需综合）；支持暂停/续跑
 async function runFullBatches(cfg, state) {
   const { folder, batches, system, runId } = state;
+  const lane = ensureLane(runId);
   const planPrefix = state.planContext ? `${state.planContext}\n\n` : '';
   for (let i = state.nextIndex; i < batches.length; i += 1) {
-    if (runState.pauseRequested) {
-      runState.pauseRequested = false;
+    if (lane.pauseRequested) {
+      lane.pauseRequested = false;
       state.nextIndex = i;
       state.pausedAt = Date.now();
-      runState.pausedState = state;
+      lane.pausedState = state;
+      touchLane(lane);
       return {
         markdown: `${state.parts.join('\n\n---\n\n')}\n\n（已暂停，可在「运行详情」中继续）`,
         stats: aggregateStats(state.statsList),
@@ -355,6 +380,7 @@ async function explainFull({ folder, files, runId = null, customPromptOverride =
   }
   const cfg = applyPromptOverride(await getSettings(), customPromptOverride);
   const { batches, reviewed } = splitIntoBatches(folder, files);
+  runId = ensureRunId(runId);
   const state = {
     kind: 'full',
     folder,
@@ -369,11 +395,13 @@ async function explainFull({ folder, files, runId = null, customPromptOverride =
     runId,
     pausedAt: null,
   };
-  runState.batchRunActive = true;
+  const lane = ensureLane(runId);
+  lane.batchRunActive = true;
   try {
     return await runFullBatches(cfg, state);
   } finally {
-    runState.batchRunActive = false;
+    lane.batchRunActive = false;
+    maybeCleanupLane(runId);
   }
 }
 
@@ -502,4 +530,4 @@ async function testConnection(settings) {
   }
 }
 
-module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, explainFollowUp, reviewFollowUp, generatePlan, testConnection, listModels, getCurrentRun, setChunkSender, cancelRun, pauseRun, resumeRun, buildOverviewSystem };
+module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, explainFollowUp, reviewFollowUp, generatePlan, testConnection, listModels, getRuns, getCurrentRun, setChunkSender, cancelRun, pauseRun, resumeRun, buildOverviewSystem };

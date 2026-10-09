@@ -22,9 +22,10 @@ interface AutoReviewApi {
   testConnection(settings: any): Promise<any>;
   listModels(settings: any): Promise<any>;
   getCurrentRun(): Promise<any>;
-  cancelRun(): Promise<any>;
-  pauseRun(): Promise<any>;
-  resumeRun(): Promise<any>;
+  listRuns(): Promise<any[]>;
+  cancelRun(runId?: string): Promise<any>;
+  pauseRun(runId?: string): Promise<any>;
+  resumeRun(runId?: string): Promise<any>;
   explainFollowUp(payload: any): Promise<any>;
   reviewFollowUp(payload: any): Promise<any>;
   saveReview(payload: any): Promise<any>;

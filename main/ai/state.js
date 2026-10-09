@@ -1,5 +1,6 @@
-// AI 调用共享状态：currentRun（运行详情）、暂停/续跑、取消句柄、流式推送方。
-// 单一可变对象，runControl / cli / backends / ai 编排层共同读写，避免循环依赖。
+// AI 调用共享状态：按 runId 的多跑道（Map），每条跑道独立维护
+// currentRun（运行详情）/ 取消句柄 / 暂停请求 / 续跑状态 / 分批激活标记，
+// 支持多个 AI 分析并发运行、互不干扰。chunkSender 全局唯一（单窗口，渲染进程按 runId 过滤）。
 
 /**
  * 暂停时保存的分批续跑状态（runOverviewBatches / runFullBatches 的循环上下文）
@@ -18,20 +19,23 @@
  * @property {any[]} [statsList]
  */
 
+/**
+ * 单条跑道（一个 runId 一次完整运行，可能跨多个分批调用）
+ * @typedef {object} RunLane
+ * @property {any} currentRun
+ * @property {null | (() => void)} currentCancel
+ * @property {boolean} pauseRequested
+ * @property {PausedBatchState | null} pausedState
+ * @property {boolean} batchRunActive
+ * @property {number} lastActive
+ */
+
 /** @type {{
- *   currentRun: any,
- *   pauseRequested: boolean,
- *   pausedState: PausedBatchState | null,
- *   batchRunActive: boolean,
- *   currentCancel: null | (() => void),
+ *   lanes: Map<string, RunLane>,
  *   chunkSender: null | ((runId: any, text: string) => void),
  * }}
  */
 module.exports = {
-  currentRun: null,
-  pauseRequested: false,
-  pausedState: null,
-  batchRunActive: false,
-  currentCancel: null,
+  lanes: new Map(),
   chunkSender: null,
 };

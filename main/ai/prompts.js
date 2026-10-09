@@ -20,16 +20,14 @@ function fileToDiffText(file) {
   return `文件: ${file.path} (${status})\n${hunks}`;
 }
 
-const CONTEXT_BLOCK_MAX_LINES = 200;
-const CONTEXT_MAX_CHARS = 4000;
+const CONTEXT_BLOCK_MAX_LINES = 400;
+const CONTEXT_MAX_CHARS = 12000;
+const HUNK_WINDOW = 15; // 每个改动块额外携带的前后行数
 
 // 读取被改动的类/函数在当前文件中的完整定义，作为评审上下文（diff 只含改动片段）。
 // 文件被删除、不存在或读取失败时返回空串。
 function buildContext(folder, file) {
   if (!folder || !file || !file.path || file.status === 'deleted') return '';
-  const targets = (Array.isArray(file.classes) ? file.classes : [])
-    .filter((c) => c && c.changed && c.startLine > 0 && c.endLine >= c.startLine);
-  if (!targets.length) return '';
   let lines;
   try {
     lines = fs.readFileSync(path.join(folder, file.path), 'utf8').split('\n');
@@ -37,6 +35,8 @@ function buildContext(folder, file) {
     return '';
   }
   const blocks = [];
+  const targets = (Array.isArray(file.classes) ? file.classes : [])
+    .filter((c) => c && c.changed && c.startLine > 0 && c.endLine >= c.startLine);
   for (const c of targets) {
     const end = Math.min(c.endLine, lines.length);
     const start = Math.min(c.startLine, end);
@@ -51,6 +51,24 @@ function buildContext(folder, file) {
       `\`\`\`\n${slice.join('\n')}${note}\n\`\`\`\n`,
     );
   }
+  // 每个改动块的前后窗口上下文（与类定义互补：没识别到类的文件也有周边代码可参考）
+  const ranges = [];
+  for (const h of Array.isArray(file.hunks) ? file.hunks : []) {
+    if (!h || !(h.newStart > 0)) continue;
+    const start = Math.max(1, h.newStart - HUNK_WINDOW);
+    const end = Math.min(lines.length, h.newStart + Math.max(h.newLines, 1) + HUNK_WINDOW);
+    const last = ranges[ranges.length - 1];
+    if (last && start <= last.end + 1) last.end = Math.max(last.end, end);
+    else ranges.push({ start, end });
+  }
+  if (ranges.length) {
+    const win = ranges
+      .map((r) => lines.slice(r.start - 1, r.end)
+        .map((l, i) => `${r.start + i}: ${l}`).join('\n'))
+      .join('\n…\n');
+    blocks.push(`### 改动位置周边代码（${file.path}）\n\`\`\`\n${win}\n\`\`\`\n`);
+  }
+  if (!blocks.length) return '';
   let out = blocks.join('\n');
   if (out.length > CONTEXT_MAX_CHARS) {
     out = `${out.slice(0, CONTEXT_MAX_CHARS)}\n（上下文过长已截断）`;
@@ -101,10 +119,9 @@ const PLAN_SYSTEM =
   '方案要具体、可落地：结合项目实际技术栈与目录结构推断涉及的关键文件，引用具体模块/类/文件名，不要泛泛而谈。';
 
 // 按累计长度分批：每批 ≤40000 字符（含上下文），大多数改动一批跑完，只有真正大的改动才分批；
-// 文件不拆半，单文件超限则单独成批并截断；最多 6 批
+// 文件不拆半，单文件超限则单独成批并截断；不设批数上限，所有文件都会被评审
 function splitIntoBatches(folder, files) {
   const BATCH_LIMIT = 40000;
-  const MAX_BATCHES = 6;
   const batches = [];
   let current = [];
   let currentLen = 0;
@@ -117,7 +134,6 @@ function splitIntoBatches(folder, files) {
         current = [];
         currentLen = 0;
       }
-      if (batches.length >= MAX_BATCHES) break;
       batches.push([`${text.slice(0, BATCH_LIMIT)}\n(diff 过长已截断)`]);
       reviewed += 1;
       continue;
@@ -127,12 +143,11 @@ function splitIntoBatches(folder, files) {
       current = [];
       currentLen = 0;
     }
-    if (batches.length >= MAX_BATCHES) break;
     current.push(text);
     currentLen += text.length;
     reviewed += 1;
   }
-  if (current.length && batches.length < MAX_BATCHES) batches.push(current);
+  if (current.length) batches.push(current);
   return { batches, reviewed };
 }
 

@@ -1367,6 +1367,29 @@ body {
 
 .run-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .run-actions .run-cancel { margin-left: 0; }
+.run-card {
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.run-card + .run-card { margin-top: 12px; }
+.run-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.run-card-title { font-weight: 600; }
+.run-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.run-empty { color: var(--text-dim); padding: 8px 0; }
 .run-pause, .run-resume {
   border-color: var(--accent);
   color: var(--accent);

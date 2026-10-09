@@ -501,11 +501,14 @@ window.__smokeUnsub = window.autoReview.onAiChunk(({ text }) => {
   const curRun = await cdp.eval('window.autoReview.getCurrentRun()');
   check('getCurrentRun 显示运行中（整体分析批次）',
     !!(curRun && !curRun.paused && curRun.kind === '整体分析'), `实际：${JSON.stringify(curRun)}`);
+  const smokeRunId = curRun && curRun.runId;
+  check('运行详情携带 runId（多跑道标识）', !!smokeRunId, `实际：${JSON.stringify(curRun)}`);
+  if (!smokeRunId) throw new Error('未获取到 runId，终止后续断言');
 
-  const pauseAccepted = await cdp.eval('window.autoReview.pauseRun()');
+  const pauseAccepted = await cdp.eval(`window.autoReview.pauseRun(${JSON.stringify(smokeRunId)})`);
   const pausedRun = await waitFor(
-    'window.autoReview.getCurrentRun().then((r) => !!(r && r.paused))', 20_000);
-  check('pauseRun 后进入暂停态（getCurrentRun.paused）', !!(pauseAccepted && pausedRun),
+    `window.autoReview.listRuns().then((l) => !!(Array.isArray(l) && l.some((r) => r.runId === ${JSON.stringify(smokeRunId)} && r.paused)))`, 20_000);
+  check('pauseRun(runId) 后进入暂停态（listRuns 中该跑道 paused）', !!(pauseAccepted && pausedRun),
     `pauseAccepted=${pauseAccepted} paused=${pausedRun}`);
   if (!pausedRun) throw new Error('暂停未生效，终止后续断言');
   const pausedHint = await cdp.eval(
@@ -517,13 +520,13 @@ window.__smokeUnsub = window.autoReview.onAiChunk(({ text }) => {
   check('暂停后流式文本停止增长', countAtPause === countAfterWait,
     `chunk 数 ${countAtPause} → ${countAfterWait}`);
 
-  await cdp.eval(`window.__smokeResume = window.autoReview.resumeRun()
+  await cdp.eval(`window.__smokeResume = window.autoReview.resumeRun(${JSON.stringify(smokeRunId)})
   .then(() => ({ ok: true }), (err) => ({ ok: false, msg: String((err && err.message) || err) }));
 'ok'`);
   const grewAfterResume = await waitFor(`window.__smokeChunks.count > ${countAfterWait}`, 20_000);
-  check('resumeRun 后文本继续增长', grewAfterResume);
+  check('resumeRun(runId) 后文本继续增长', grewAfterResume);
   if (!grewAfterResume) throw new Error('继续运行无输出，终止后续断言');
-  const cancelAccepted = await cdp.eval('window.autoReview.cancelRun()');
+  const cancelAccepted = await cdp.eval(`window.autoReview.cancelRun(${JSON.stringify(smokeRunId)})`);
   const resumeResult = await cdp.eval('window.__smokeResume');
   check('cancelRun 终止运行并报「已被用户终止」',
     !!(cancelAccepted && resumeResult && resumeResult.ok === false
@@ -535,6 +538,33 @@ window.__smokeUnsub = window.autoReview.onAiChunk(({ text }) => {
   } catch { /* 渲染进程崩溃 */ }
   check('终止后渲染进程未崩溃', alive);
   await cdp.eval(`window.__smokeUnsub && window.__smokeUnsub(); 'ok'`);
+
+  // ---------- 扩面②.5：并发多跑道（两个分析同时跑，按 runId 各自独立取消） ----------
+  const concFile = {
+    path: 'src/featureFlags.js',
+    status: 'added',
+    hunks: [{ header: '@@ -0,0 +1,3 @@', lines: [{ type: 'add', content: 'export const x = 1;', newLine: 1 }] }],
+  };
+  const concPayload = (runId) => JSON.stringify({ folder: repo, file: concFile, runId });
+  await cdp.eval(`window.__conc1 = window.autoReview.analyzeFile(${concPayload('smoke-conc-1')})
+  .then(() => 'done-1', (err) => ` + '`err-1:${String((err && err.message) || err)}`' + `); 'ok'`);
+  await cdp.eval(`window.__conc2 = window.autoReview.analyzeFile(${concPayload('smoke-conc-2')})
+  .then(() => 'done-2', (err) => ` + '`err-2:${String((err && err.message) || err)}`' + `); 'ok'`);
+  const twoRuns = await waitFor(
+    `window.autoReview.listRuns().then((l) => Array.isArray(l) && l.filter((r) => !r.paused).length >= 2)`,
+    20_000,
+  );
+  check('并发：两个分析同时运行（listRuns 返回 2 条）', twoRuns);
+  const concCancel = await cdp.eval(`window.autoReview.cancelRun('smoke-conc-1')`);
+  check('并发：按 runId 终止其中一个运行', !!concCancel);
+  const conc1 = await cdp.eval('window.__conc1');
+  check('并发：被终止的运行报「已被用户终止」',
+    typeof conc1 === 'string' && conc1.startsWith('err-1:') && conc1.includes('已被用户终止'),
+    `实际：${conc1}`);
+  const conc2 = await cdp.eval('window.__conc2');
+  check('并发：另一个运行不受影响正常跑完', conc2 === 'done-2', `实际：${conc2}`);
+  const drained = await waitFor('window.autoReview.listRuns().then((l) => Array.isArray(l) && l.length === 0)');
+  check('并发：全部结束后跑道回收（listRuns 为空）', drained);
 
   // ---------- 扩面③：导出 HTML（原生保存对话框自动化够不到，验证结果渲染与导出按钮可用） ----------
   sseCfg.chunks = 8;
