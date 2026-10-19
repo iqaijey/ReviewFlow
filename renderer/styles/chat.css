@@ -1,0 +1,294 @@
+/* ReviewFlow - 持久化追问会话与逐文件分析缓存样式 */
+
+.chat-view {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-notices:empty {
+  display: none;
+}
+
+.chat-notice {
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+  background: var(--panel-raised);
+  color: var(--text-dim);
+}
+
+.chat-notice-truncated {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.chat-notice-readonly {
+  border-color: var(--info);
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.chat-notice-error {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: 6px 10px;
+}
+
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-messages:empty {
+  display: none;
+}
+
+.chat-message {
+  margin-bottom: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-message-user {
+  background: var(--accent-bg-subtle);
+  border-color: var(--accent-border);
+}
+
+.chat-message-assistant {
+  background: var(--panel);
+}
+
+.chat-message-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chat-message-role {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-message-user .chat-message-role {
+  color: var(--accent);
+}
+
+.chat-message-time {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-status-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  border: 1px solid transparent;
+}
+
+.chat-status-pending {
+  background: var(--info-bg);
+  color: var(--info);
+  border-color: var(--info);
+}
+
+.chat-status-failed {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.chat-status-cancelled {
+  background: var(--panel-raised);
+  color: var(--text-dim);
+  border-color: var(--border-strong);
+}
+
+.chat-status-interrupted {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.chat-message-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-action-btn {
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.chat-message-body {
+  max-width: 100%;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.chat-message-user .chat-message-body {
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 0;
+}
+
+.chat-message-body p:first-child {
+  margin-top: 0;
+}
+
+.chat-message-body p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-message-error {
+  padding: 4px 0 0;
+  font-size: 12px;
+}
+
+.chat-pending-text {
+  color: var(--text-dim);
+}
+
+.chat-loading-row {
+  padding: 4px 0;
+}
+
+.chat-message-stats {
+  margin: 2px 0 0;
+}
+
+.chat-live-region {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.chat-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.chat-composer-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-composer-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.chat-composer-textarea {
+  width: 100%;
+  max-width: none;
+  min-height: 54px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.chat-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ---------- 历史记录内嵌追问 ---------- */
+.history-chat-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.history-chat-host {
+  margin-top: 4px;
+}
+
+/* ---------- 逐句解析持久化会话列表 ---------- */
+.explain-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.explain-thread-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-family: var(--mono);
+}
+
+.explain-thread-time {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.explain-history-item.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-border);
+}
+
+/* ---------- 逐文件分析缓存标记 ---------- */
+.file-cache-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  background: var(--accent-bg-subtle);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+}
