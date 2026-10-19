@@ -87,11 +87,18 @@ async function checkForUpdates() {
   };
 }
 
+// 下载地址只允许来自本项目 GitHub Releases，防止渲染层传入任意 URL 后被下载并 shell.openPath
+const DOWNLOAD_URL_PREFIX = 'https://github.com/iqaijey/ReviewFlow/releases/';
+
 async function downloadUpdate(dmgUrl, onProgress) {
+  const url = String(dmgUrl || '');
+  if (!url.startsWith(DOWNLOAD_URL_PREFIX)) {
+    throw new Error('下载失败：非法的下载地址');
+  }
   let response;
   try {
     // 下载不限总时长：AbortSignal.timeout 会中断整个 body 读取
-    response = await fetch(dmgUrl, {
+    response = await fetch(url, {
       headers: { 'User-Agent': 'ReviewFlow' },
     });
   } catch (err) {
@@ -103,7 +110,10 @@ async function downloadUpdate(dmgUrl, onProgress) {
 
   const downloadDir = path.join(app.getPath('userData'), 'downloads');
   await fs.promises.mkdir(downloadDir, { recursive: true });
-  const fileName = decodeURIComponent(dmgUrl.split('?')[0].split('/').pop() || 'ReviewFlow-update.dmg');
+  const fileName = path.basename(decodeURIComponent(url.split('?')[0]));
+  if (!fileName.endsWith('.dmg')) {
+    throw new Error('下载失败：非法的安装包文件名');
+  }
   const filePath = path.join(downloadDir, fileName);
 
   const total = parseInt(response.headers.get('content-length') || '0', 10);
