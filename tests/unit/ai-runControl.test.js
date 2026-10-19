@@ -63,6 +63,15 @@ test('getCurrentRun 兼容：返回最近活跃的一条运行', () => {
   assert.strictEqual(cur.runId, 'r1');
 });
 
+test('getRuns 剥离 promptText，getRunPrompt 按需返回原文', () => {
+  const lane = runControl.ensureLane('r1');
+  lane.currentRun = { kind: 'overview', promptText: 'big prompt' };
+  const runs = runControl.getRuns();
+  assert.strictEqual('promptText' in runs[0], false);
+  assert.strictEqual(runControl.getRunPrompt('r1'), 'big prompt');
+  assert.strictEqual(runControl.getRunPrompt('nope'), '');
+});
+
 test('getRuns 暂停跑道返回暂停态摘要', () => {
   const lane = runControl.ensureLane('r1');
   lane.pausedState = { kind: 'review', nextIndex: 2, batches: ['a', 'b', 'c'], pausedAt: 999 };
@@ -98,12 +107,12 @@ test('pauseRun(runId) 只置位对应跑道，返回其 batchRunActive', () => {
   assert.strictEqual(b.pauseRequested, true);
 });
 
-test('pauseRun 未知 runId 返回 false；无参回退到最近活跃跑道', () => {
+test('pauseRun 未知 runId 返回 false；无参不再回退跑道，直接返回 false', () => {
   assert.strictEqual(runControl.pauseRun('nope'), false);
   const lane = runControl.ensureLane('r1');
   lane.batchRunActive = true;
-  assert.strictEqual(runControl.pauseRun(), true);
-  assert.strictEqual(lane.pauseRequested, true);
+  assert.strictEqual(runControl.pauseRun(), false);
+  assert.strictEqual(lane.pauseRequested, false);
 });
 
 // ---------- cancelRun ----------

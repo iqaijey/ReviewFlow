@@ -83,7 +83,9 @@ function runInfoFor(lane, runId) {
   return null;
 }
 
-// 全部跑道的展示态（最近活跃在前）
+// 全部跑道的展示态（最近活跃在前）。
+// promptText 体积大（含完整 diff）且运行详情卡片只需展示一次，轮询响应里剥离，
+// 由渲染端首次需要时走 getRunPrompt 按需获取
 function getRuns() {
   const out = [];
   for (const [runId, lane] of state.lanes) {
@@ -91,7 +93,16 @@ function getRuns() {
     if (info) out.push({ lastActive: lane.lastActive, info });
   }
   out.sort((a, b) => b.lastActive - a.lastActive);
-  return out.map((x) => x.info);
+  return out.map((x) => {
+    const { promptText, ...rest } = x.info;
+    return rest;
+  });
+}
+
+// 按需取某条跑道当前运行的完整 prompt 文本
+function getRunPrompt(runId) {
+  const lane = typeof runId === 'string' && runId ? state.lanes.get(runId) : null;
+  return lane && lane.currentRun ? lane.currentRun.promptText || '' : '';
 }
 
 // 兼容旧接口：返回最近活跃的一条运行（或 null）
@@ -102,6 +113,8 @@ function getCurrentRun() {
 
 // 暂停/继续：分批循环每批开始前检查 pauseRequested，暂停时把续跑状态存进 pausedState
 function pauseRun(runId) {
+  // 渲染端始终传 runId；缺省时不再回退最近活跃跑道，避免多跑道并发时误操作
+  if (typeof runId !== 'string' || !runId) return false;
   const lane = resolveLane(runId);
   if (!lane) return false;
   lane.pauseRequested = true;
@@ -110,6 +123,7 @@ function pauseRun(runId) {
 
 // 终止指定运行：API 中断 fetch，CLI 杀进程组；同时清掉该跑道的暂停状态
 function cancelRun(runId) {
+  if (typeof runId !== 'string' || !runId) return false;
   const lane = resolveLane(runId);
   if (!lane) return false;
   lane.pausedState = null;
@@ -119,7 +133,7 @@ function cancelRun(runId) {
     lane.currentCancel = null;
     return true;
   }
-  if (typeof runId === 'string' && runId) maybeCleanupLane(runId);
+  maybeCleanupLane(runId);
   return false;
 }
 
@@ -160,6 +174,7 @@ module.exports = {
   maybeCleanupLane,
   touchLane,
   getRuns,
+  getRunPrompt,
   getCurrentRun,
   pauseRun,
   cancelRun,
