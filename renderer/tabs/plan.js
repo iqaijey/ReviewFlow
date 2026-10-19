@@ -1,5 +1,7 @@
 // 需求方案：上传 PRD + 设计稿 → AI 生成技术方案，作为后续评审依据
 import { renderMarkdown, extractH2Titles } from '../markdown.js';
+import { createStreamPreview } from '../lib/streamPreview.js';
+import { createLoadingNode } from '../lib/loading.js';
 
 const BACKEND_LABELS = { api: 'API', opencode: 'OpenCode', kimi: 'Kimi CLI', codex: 'Codex' };
 
@@ -269,22 +271,15 @@ export default {
     /** @type {{ planId: any, title: any, prdFileName: any, prdText: any, images: any[] } | null} */
     let editing = null; // { planId, title, prdFileName, prdText, images: [{name, dataUrl}] }
     let running = false;
+    /** @type {(() => void) | null} */
+    let activeCancel = null;
 
     const setStatus = (node) => {
       statusBox.textContent = '';
       if (node) statusBox.appendChild(node);
     };
 
-    const loadingNode = () => {
-      const loading = el('div', { class: 'review-loading' });
-      loading.appendChild(el('span', { class: 'spinner' }));
-      loading.appendChild(el('span', {}, 'AI 正在生成技术方案，请稍候…'));
-      loading.appendChild(el('button', {
-        class: 'run-link', type: 'button',
-        onClick: () => ctx.showRunDetails(),
-      }, '运行详情'));
-      return loading;
-    };
+    const loadingNode = () => createLoadingNode(el, ctx, 'AI 正在生成技术方案，请稍候…');
 
     const refreshButtons = () => {
       const noFolder = !state.folder;
@@ -383,7 +378,7 @@ export default {
           toast(detail.active ? '已取消当前方案' : `已将「${detail.title}」设为当前方案`);
           loadList();
         } catch (err) {
-          alert('操作失败：' + errText(err));
+          toast('操作失败：' + errText(err), 'error');
         }
       });
       const editBtn = el('button', { class: 'btn', type: 'button' }, '载入编辑');
@@ -410,7 +405,7 @@ export default {
           toast('方案已删除');
           loadList();
         } catch (err) {
-          alert('删除失败：' + errText(err));
+          toast('删除失败：' + errText(err), 'error');
         }
       });
       actions.appendChild(activeBtn);
@@ -437,7 +432,8 @@ export default {
     const loadList = async () => {
       listBox.textContent = '';
       if (!state.folder) {
-        listBox.appendChild(emptyState('请先选择项目文件夹', '点击左下角「选择项目」开始'));
+        listBox.appendChild(emptyState('请先选择项目文件夹', '选择一个项目后，即可基于 PRD 生成技术方案',
+          { label: '选择项目', onClick: () => ctx.selectFolder() }));
         return;
       }
       if (!supported) {
@@ -486,7 +482,7 @@ export default {
       try {
         const prdText = await readAsText(file);
         if (!prdText.trim()) {
-          alert('PRD 文档内容为空');
+          toast('PRD 文档内容为空', 'error');
           return;
         }
         const title = titleInput.value.trim() || file.name.replace(/\.[^.]+$/, '');
@@ -501,7 +497,7 @@ export default {
         loadList();
         toast(`已创建方案草稿「${title}」，可继续上传设计稿`);
       } catch (err) {
-        alert('创建方案失败：' + errText(err));
+        toast('创建方案失败：' + errText(err), 'error');
       } finally {
         prdBtn.disabled = false;
         refreshButtons();
@@ -513,7 +509,7 @@ export default {
       const url = prdUrlInput.value.trim();
       if (!url || !state.folder || prdUrlBtn.disabled) return;
       if (!/^https?:\/\//i.test(url)) {
-        alert('请输入完整的 http/https 链接');
+        toast('请输入完整的 http/https 链接', 'error');
         return;
       }
       if (editing && !confirm(
@@ -535,7 +531,7 @@ export default {
         setStatus(null);
         toast(`已导入 PRD「${title}」`);
       } catch (err) {
-        alert('导入 PRD 链接失败：' + errText(err));
+        toast('导入 PRD 链接失败：' + errText(err), 'error');
       } finally {
         prdUrlBtn.disabled = false;
         prdUrlBtn.textContent = '导入链接';
@@ -548,7 +544,7 @@ export default {
       if (!state.folder || !editing || prdSaveBtn.disabled) return;
       const text = prdTextArea.value;
       if (!text.trim()) {
-        alert('PRD 内容为空');
+        toast('PRD 内容为空', 'error');
         return;
       }
       if (text === editing.prdText) {
@@ -563,7 +559,7 @@ export default {
         await recreatePlanWithText(text, editing.title, editing.prdFileName);
         toast('已保存为新方案');
       } catch (err) {
-        alert('保存失败：' + errText(err));
+        toast('保存失败：' + errText(err), 'error');
       } finally {
         prdSaveBtn.disabled = false;
         refreshButtons();
@@ -594,7 +590,7 @@ export default {
         renderEditing();
         loadList();
       } catch (err) {
-        alert(`上传设计稿失败：${errText(err)}`);
+        toast(`上传设计稿失败：${errText(err)}`, 'error');
       } finally {
         imgBtn.disabled = false;
         refreshButtons();
@@ -607,7 +603,7 @@ export default {
       const url = imgUrlInput.value.trim();
       if (!url || !state.folder || imgUrlBtn.disabled) return;
       if (!/^https?:\/\//i.test(url)) {
-        alert('请输入完整的 http/https 链接');
+        toast('请输入完整的 http/https 链接', 'error');
         return;
       }
       if (!editing) {
@@ -630,7 +626,7 @@ export default {
         loadList();
         toast(`已导入设计稿 ${saved.name || name}`);
       } catch (err) {
-        alert('导入设计稿链接失败：' + errText(err));
+        toast('导入设计稿链接失败：' + errText(err), 'error');
       } finally {
         imgUrlBtn.disabled = false;
         imgUrlBtn.textContent = '导入链接';
@@ -646,7 +642,7 @@ export default {
         renderEditing();
         loadList();
       } catch (err) {
-        alert('删除设计稿失败：' + errText(err));
+        toast('删除设计稿失败：' + errText(err), 'error');
       }
     };
 
@@ -658,14 +654,16 @@ export default {
       resultBox.textContent = '';
       setStatus(loadingNode());
       const runId = `run-${Date.now()}`;
-      const streamBox = el('div', { class: 'stream-preview plan-stream' });
-      const unsubscribe = typeof api.onAiChunk === 'function'
-        ? api.onAiChunk(({ runId: chunkRunId, text }) => {
-            if (chunkRunId !== runId) return;
-            if (!streamBox.parentNode) resultBox.appendChild(streamBox);
-            streamBox.innerHTML = renderMarkdown(text);
-          })
-        : null;
+      const stream = createStreamPreview({
+        el, api, runId, parent: resultBox, className: 'stream-preview plan-stream',
+      });
+      activeCancel = () => {
+        if (typeof api.cancelRun === 'function') api.cancelRun(runId).catch(() => {});
+      };
+      // 运行中主按钮变为「终止运行」（refreshButtons 会禁用它，这里显式重启用）
+      genBtn.disabled = false;
+      genBtn.textContent = '终止运行';
+      genBtn.classList.add('btn-danger');
       try {
         const { markdown, stats } = await api.generatePlan({
           folder: state.folder,
@@ -697,20 +695,34 @@ export default {
           notify('技术方案生成失败', errText(err));
         }
       } finally {
-        if (unsubscribe) unsubscribe();
-        streamBox.remove();
+        if (stream.unsubscribe) stream.unsubscribe();
+        stream.streamBox.remove();
+        activeCancel = null;
+        genBtn.textContent = '生成方案';
+        genBtn.classList.remove('btn-danger');
         running = false;
         refreshButtons();
       }
     };
 
-    genBtn.addEventListener('click', run);
+    genBtn.addEventListener('click', () => {
+      if (running && activeCancel) {
+        activeCancel();
+        return;
+      }
+      run();
+    });
 
-    // 文件夹切换后重新加载列表，并丢弃属于旧项目的编辑状态
+    // 文件夹切换后重新加载列表，并丢弃属于旧项目的编辑状态；
+    // 同文件夹的改动重扫（fs.watch 自动触发）只刷新列表，不清空正在编辑/生成的内容
+    let knownFolder = null;
     bus.addEventListener('changes:loaded', () => {
-      clearEditing();
-      resultBox.textContent = '';
-      setStatus(null);
+      if (state.folder !== knownFolder) {
+        knownFolder = state.folder;
+        clearEditing();
+        resultBox.textContent = '';
+        setStatus(null);
+      }
       loadList();
     });
 

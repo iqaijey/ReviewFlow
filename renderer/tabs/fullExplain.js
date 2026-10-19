@@ -1,5 +1,7 @@
 // 完整讲解：把当前改动按文件逐块讲透（流式预览 + 运行详情 + 终止）
 import { renderMarkdown, renderMarkdownPage } from '../markdown.js';
+import { createStreamPreview } from '../lib/streamPreview.js';
+import { createLoadingNode } from '../lib/loading.js';
 
 const BACKEND_LABELS = { api: 'API', opencode: 'OpenCode', kimi: 'Kimi CLI', codex: 'Codex' };
 
@@ -127,7 +129,7 @@ export default {
           });
           if (saved && toast) toast(`已保存到 ${saved}`);
         } catch (err) {
-          alert('导出失败：' + errText(err));
+          toast('导出失败：' + errText(err), 'error');
         } finally {
           btn.disabled = false;
         }
@@ -217,7 +219,8 @@ export default {
     const loadHistory = async () => {
       historyPanel.textContent = '';
       if (!state.folder) {
-        historyPanel.appendChild(emptyState('请先选择项目文件夹', '点击左下角「选择项目」开始'));
+        historyPanel.appendChild(emptyState('请先选择项目文件夹', '选择一个项目后，这里会显示历史讲解记录',
+          { label: '选择项目', onClick: () => ctx.selectFolder() }));
         return;
       }
       let reviews = [];
@@ -276,16 +279,7 @@ export default {
       if (node) statusBox.appendChild(node);
     };
 
-    const loadingNode = () => {
-      const loading = el('div', { class: 'review-loading' });
-      loading.appendChild(el('span', { class: 'spinner' }));
-      loading.appendChild(el('span', {}, 'AI 讲解中，请稍候…'));
-      loading.appendChild(el('button', {
-        class: 'run-link', type: 'button',
-        onClick: () => ctx.showRunDetails(),
-      }, '运行详情'));
-      return loading;
-    };
+    const loadingNode = () => createLoadingNode(el, ctx, 'AI 讲解中，请稍候…');
 
     let running = false;
 
@@ -308,18 +302,15 @@ export default {
       if (running || !state.changes || !state.changes.files.length) return;
       running = true;
       runSeq++;
-      startBtn.disabled = true;
       mdBox.textContent = '';
       setStatus(loadingNode());
       const runId = `run-${Date.now()}`;
-      const streamBox = el('div', { class: 'stream-preview', style: 'white-space: pre-wrap' });
-      const unsubscribe = typeof api.onAiChunk === 'function'
-        ? api.onAiChunk(({ runId: chunkRunId, text }) => {
-            if (chunkRunId !== runId) return;
-            if (!streamBox.parentNode) mdBox.appendChild(streamBox);
-            streamBox.textContent = text;
-          })
-        : null;
+      const stream = createStreamPreview({ el, api, runId, parent: mdBox });
+      activeCancel = () => {
+        if (typeof api.cancelRun === 'function') api.cancelRun(runId).catch(() => {});
+      };
+      startBtn.textContent = '终止运行';
+      startBtn.classList.add('btn-danger');
       try {
         const payload = {
           folder: state.folder,
@@ -358,14 +349,24 @@ export default {
           notify('完整讲解失败', errText(err));
         }
       } finally {
-        if (unsubscribe) unsubscribe();
-        streamBox.remove();
+        if (stream.unsubscribe) stream.unsubscribe();
+        stream.streamBox.remove();
+        activeCancel = null;
+        startBtn.textContent = '开始完整讲解';
+        startBtn.classList.remove('btn-danger');
         running = false;
-        startBtn.disabled = false;
       }
     };
 
-    startBtn.addEventListener('click', run);
+    /** @type {(() => void) | null} */
+    let activeCancel = null;
+    startBtn.addEventListener('click', () => {
+      if (running && activeCancel) {
+        activeCancel();
+        return;
+      }
+      run();
+    });
 
     bus.addEventListener('changes:loaded', () => {
       refresh();
