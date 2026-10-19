@@ -1,5 +1,7 @@
 // 多角度 Review：整体分析 / 逐文件 / 历史 三种模式
 import { renderMarkdown, renderMarkdownPage } from '../markdown.js';
+import { createStreamPreview } from '../lib/streamPreview.js';
+import { createLoadingNode } from '../lib/loading.js';
 
 const DIMENSIONS = [
   '改动概述', '安全性', '结构问题', '影响面',
@@ -149,7 +151,7 @@ export default {
           });
           if (saved && toast) toast(`已保存到 ${saved}`);
         } catch (err) {
-          alert('导出失败：' + errText(err));
+          toast('导出失败：' + errText(err), 'error');
         } finally {
           btn.disabled = false;
         }
@@ -179,7 +181,7 @@ export default {
           });
           if (saved && toast) toast(`已保存到 ${saved}`);
         } catch (err) {
-          alert('导出失败：' + errText(err));
+          toast('导出失败：' + errText(err), 'error');
         } finally {
           btn.disabled = false;
         }
@@ -202,20 +204,18 @@ export default {
     // 随评审历史持久化在 stats.sectionFeedback；重新分析时重置
     /** @type {Record<string, 'useful' | 'useless'>} */
     let sectionFeedback = {};
-    /** @type {{ title: string, markdown: string, stats: any } | null} */
+    /** @type {{ id?: string, title: string, markdown: string, stats: any } | null} */
     let currentResult = null;
 
-    // 标记回写历史：review:save 没有更新接口，标记变化时重存一条同 title+markdown
-    // 的记录；历史列表渲染时按 title+markdown 去重，只展示最新一条
+    // 维度标记回写：按 id 原地更新历史记录的 stats（不再整条重写，历史文件不膨胀）；
+    // 旧版本产生的重复记录仍由历史列表按 title+markdown 去重展示
     const persistSectionFeedback = () => {
-      if (!currentResult || !state.folder || typeof api.saveReview !== 'function') return;
-      const { title, markdown, stats } = currentResult;
-      api.saveReview({
-        folder: state.folder,
-        title,
-        markdown,
-        stats: { ...(stats || {}), sectionFeedback: { ...sectionFeedback } },
-      }).catch(() => { /* 标记写盘失败不影响界面 */ });
+      if (!currentResult || !state.folder || typeof api.updateReviewStats !== 'function') return;
+      const merged = { ...(currentResult.stats || {}), sectionFeedback: { ...sectionFeedback } };
+      currentResult.stats = merged;
+      if (!currentResult.id) return;
+      api.updateReviewStats({ folder: state.folder, id: currentResult.id, stats: merged })
+        .catch(() => { /* 标记写盘失败不影响界面 */ });
     };
 
     // 维度追问：整体结论 + 本小节正文作为上下文，回答渲染在该节下方，可多轮追问
@@ -299,14 +299,30 @@ export default {
     };
 
     // 渲染完成后给每个 h2 小节注入操作条（追问 / 有用 / 没用）。
-    // 流式期间不注入（只在整体分析完成后调用）；追问容器独立挂在节下，
-    // 导出走原始 markdown 字符串，这些注入的 DOM 不会进入导出内容
+    // 流式期间不注入（只在整体分析完成后调用）；追问表单懒构建（首次点「追问」才创建），
+    // 容器挂在小节正文之后；导出走原始 markdown 字符串，这些注入的 DOM 不会进入导出内容
     const injectSectionTools = (markdown) => {
       if (typeof api.reviewFollowUp !== 'function') return;
       for (const h2 of mdBox.querySelectorAll(':scope > h2')) {
         const title = (h2.textContent || '').trim(); // 注入按钮前先取纯标题
-        const followBox = buildSectionFollowUp(markdown, title);
-        followBox.style.display = 'none';
+        /** @type {HTMLElement | null} */
+        let followBox = null;
+        // 懒构建追问表单：绝大多数小节永远不会被点开
+        const ensureFollowBox = () => {
+          let box = followBox;
+          if (!box) {
+            box = /** @type {HTMLElement} */ (buildSectionFollowUp(markdown, title));
+            box.style.display = 'none';
+            let next = h2.nextSibling;
+            while (next && !(next.nodeType === 1 && /** @type {Element} */ (next).tagName === 'H2')) {
+              next = next.nextSibling;
+            }
+            if (next) mdBox.insertBefore(box, next);
+            else mdBox.appendChild(box);
+            followBox = box;
+          }
+          return box;
+        };
 
         const tools = el('span', { class: 'section-tools' });
         const askBtn = el('button', {
@@ -325,10 +341,11 @@ export default {
           tools.classList.toggle('has-mark', !!v);
         };
         askBtn.addEventListener('click', () => {
-          const opening = followBox.style.display === 'none';
-          followBox.style.display = opening ? '' : 'none';
+          const box = ensureFollowBox();
+          const opening = box.style.display === 'none';
+          box.style.display = opening ? '' : 'none';
           h2.classList.toggle('tools-open', opening);
-          const inputEl = opening ? followBox.querySelector('input') : null;
+          const inputEl = opening ? box.querySelector('input') : null;
           if (inputEl) inputEl.focus();
         });
         usefulBtn.addEventListener('click', () => {
@@ -348,13 +365,6 @@ export default {
         tools.appendChild(uselessBtn);
         h2.appendChild(tools);
         syncMarkUI();
-        // 追问容器挂在小节正文之后（下一个 h2 之前，没有则挂在结果末尾）
-        let next = h2.nextSibling;
-        while (next && !(next.nodeType === 1 && /** @type {Element} */ (next).tagName === 'H2')) {
-          next = next.nextSibling;
-        }
-        if (next) mdBox.insertBefore(followBox, next);
-        else mdBox.appendChild(followBox);
       }
     };
 
@@ -451,16 +461,7 @@ export default {
         `${pad(d.getHours())}:${pad(d.getMinutes())} · ${files.length} 文件 +${add} -${del}`;
     };
 
-    const loadingNode = () => {
-      const loading = el('div', { class: 'review-loading' });
-      loading.appendChild(el('span', { class: 'spinner' }));
-      loading.appendChild(el('span', {}, 'AI 分析中，请稍候…'));
-      loading.appendChild(el('button', {
-        class: 'run-link', type: 'button',
-        onClick: () => ctx.showRunDetails(),
-      }, '运行详情'));
-      return loading;
-    };
+    const loadingNode = () => createLoadingNode(el, ctx, 'AI 分析中，请稍候…');
 
     // ---------- 整体分析 ----------
     const toolbar = el('div', { class: 'review-toolbar' });
@@ -526,12 +527,13 @@ export default {
         bus.dispatchEvent(new CustomEvent('settings:saved'));
         if (toast) toast(`已应用预设「${preset.name}」`);
       } catch (err) {
-        alert('应用预设失败：' + errText(err));
+        toast('应用预设失败：' + errText(err), 'error');
       }
     });
     const loadDimensions = () => {
       api.getSettings()
         .then((s) => {
+          syncMultiLabels(s);
           cachedCustomPrompt = (s && s.customPrompt) || '';
           cachedCustomDims = parseCustomDimensions(s && s.customDimensions);
           cachedPresets = (Array.isArray(s && s.presets) ? s.presets : [])
@@ -571,8 +573,77 @@ export default {
     loadDimensions();
     refreshPlanHint();
     bus.addEventListener('settings:saved', loadDimensions);
-    const startBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '开始 AI 分析');
-    // 「对比上次评审」开关：开启且存在历史评审时，把最近一次评审结论带给 AI 做对比
+
+    // ---------- 多模型并行评审：勾选多个后端并行评审，再由指定模型汇总 ----------
+    const MULTI_BACKENDS = [['api', 'API'], ['opencode', 'OpenCode'], ['kimi', 'Kimi CLI'], ['codex', 'Codex']];
+    const MULTI_MODEL_FIELD = { api: 'model', opencode: 'opencodeModel', kimi: 'kimiModel', codex: 'codexModel' };
+    let multiOn = localStorage.getItem('multiReviewEnabled') === '1';
+    const multiToggle = el('button', {
+      class: 'review-chip', type: 'button',
+      title: '多个模型并行评审同一份改动，再由汇总模型合并为一份报告（各模型独立消耗 token）',
+    }, '多模型');
+    const multiRow = el('div', { class: 'review-multi-row', style: 'display:none' });
+    /** @type {Map<string, HTMLInputElement>} */
+    const multiBoxes = new Map();
+    for (const [value, label] of MULTI_BACKENDS) {
+      const box = el('input', { type: 'checkbox' });
+      const item = el('label', { class: 'review-multi-item' });
+      item.appendChild(box);
+      item.appendChild(el('span', { class: 'review-multi-name' }, label));
+      item.appendChild(el('span', { class: 'review-multi-model', dataset: { backend: value } }, ''));
+      multiBoxes.set(value, box);
+      multiRow.appendChild(item);
+    }
+    multiRow.appendChild(el('span', { class: 'toolbar-label' }, '汇总模型'));
+    const synSelect = el('select', {
+      class: 'settings-input review-preset-select', title: '用哪个模型把多份评审合并为最终报告',
+    });
+    for (const [value, label] of MULTI_BACKENDS) {
+      synSelect.appendChild(el('option', { value, text: label }));
+    }
+    multiRow.appendChild(synSelect);
+    multiRow.appendChild(el('span', { class: 'settings-hint' }, '并行评审互不影响，单个失败不阻断；token 独立计费'));
+
+    const persistMulti = () => {
+      localStorage.setItem('multiReviewModels',
+        JSON.stringify([...multiBoxes].filter(([, b]) => b.checked).map(([v]) => v)));
+      localStorage.setItem('multiReviewSynthesizer', synSelect.value);
+    };
+    try {
+      const saved = JSON.parse(localStorage.getItem('multiReviewModels') || '[]');
+      for (const v of saved) {
+        const box = multiBoxes.get(v);
+        if (box) box.checked = true;
+      }
+    } catch { /* 损坏的本地存储按空处理 */ }
+    if (localStorage.getItem('multiReviewSynthesizer')) {
+      synSelect.value = localStorage.getItem('multiReviewSynthesizer');
+    }
+    for (const box of multiBoxes.values()) box.addEventListener('change', persistMulti);
+    synSelect.addEventListener('change', persistMulti);
+    const syncMultiToggle = () => {
+      multiToggle.classList.toggle('active', multiOn);
+      multiRow.style.display = multiOn ? '' : 'none';
+    };
+    multiToggle.addEventListener('click', () => {
+      multiOn = !multiOn;
+      localStorage.setItem('multiReviewEnabled', multiOn ? '1' : '0');
+      syncMultiToggle();
+    });
+    syncMultiToggle();
+    // 复选框标注各后端配置的模型名；汇总模型未选过时默认当前后端
+    const syncMultiLabels = (s) => {
+      if (!s) return;
+      for (const [value] of MULTI_BACKENDS) {
+        const span = multiRow.querySelector(`[data-backend="${value}"]`);
+        if (span) span.textContent = `（${s[MULTI_MODEL_FIELD[value]] || '默认模型'}）`;
+      }
+      if (!localStorage.getItem('multiReviewSynthesizer') && s.backend) {
+        synSelect.value = s.backend;
+      }
+    };
+
+    const startBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '开始 AI 分析');    // 「对比上次评审」开关：开启且存在历史评审时，把最近一次评审结论带给 AI 做对比
     const prevLabel = el('label', {
       class: 'review-preset-toggle', title: '开启后，评审会带上最近一次评审的结论，追加「与上次对比」小节',
       style: 'display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text-dim)',
@@ -591,9 +662,11 @@ export default {
     toolbar.appendChild(chips);
     toolbar.appendChild(presetSelect);
     toolbar.appendChild(prevLabel);
+    toolbar.appendChild(multiToggle);
     toolbar.appendChild(startBtn);
     toolbar.appendChild(runLink);
     overallPanel.appendChild(toolbar);
+    overallPanel.appendChild(multiRow);
 
     const statusBox = el('div', { class: 'review-status' });
     const checklistBox = el('div', { style: 'display:none' });
@@ -746,11 +819,17 @@ export default {
 
     const runAnalysis = async (overridePrompt) => {
       if (running || !state.changes || !state.changes.files.length) return;
+      const multiModels = multiOn
+        ? [...multiBoxes].filter(([, b]) => b.checked).map(([v]) => v)
+        : [];
+      if (multiOn && multiModels.length < 2) {
+        toast('多模型评审请至少选择 2 个模型', 'error');
+        return;
+      }
       // 按钮点击会把事件对象传进来，只接受字符串形式的临时要求
       const override = typeof overridePrompt === 'string' ? overridePrompt.trim() : '';
       running = true;
       runSeq++;
-      startBtn.disabled = true;
       mdBox.textContent = '';
       sectionFeedback = {};
       currentResult = null;
@@ -763,14 +842,15 @@ export default {
       }
       // API 后端流式输出：增量文本先以纯文本预览，结束后替换为渲染好的 markdown
       const runId = `run-${Date.now()}`;
-      const streamBox = el('div', { class: 'stream-preview', style: 'white-space: pre-wrap' });
-      const unsubscribe = typeof api.onAiChunk === 'function'
-        ? api.onAiChunk(({ runId: chunkRunId, text }) => {
-            if (chunkRunId !== runId) return;
-            if (!streamBox.parentNode) mdBox.appendChild(streamBox);
-            streamBox.textContent = text;
-          })
-        : null;
+      const stream = createStreamPreview({ el, api, runId, parent: mdBox });
+      // 运行中开始按钮变为「终止运行」；多模型时同时终止各子跑道
+      activeCancel = () => {
+        if (typeof api.cancelRun !== 'function') return;
+        api.cancelRun(runId).catch(() => {});
+        multiModels.forEach((_, i) => api.cancelRun(`${runId}-m${i}`).catch(() => {}));
+      };
+      startBtn.textContent = '终止运行';
+      startBtn.classList.add('btn-danger');
       try {
         const payload = {
           folder: state.folder,
@@ -808,9 +888,32 @@ export default {
         }
         const plan = await loadPlanContext(api, state.folder);
         if (plan) payload.planContext = plan.section;
-        const { markdown, stats } = await api.analyzeOverview(payload);
+        if (multiModels.length) {
+          payload.models = multiModels.map((b) => ({ backend: b }));
+          payload.synthesizer = { backend: synSelect.value };
+        }
+        const result = multiModels.length
+          ? await api.analyzeOverviewMulti(payload)
+          : await api.analyzeOverview(payload);
+        const { markdown, stats, perModel } = result;
         setStatus(null);
         mdBox.innerHTML = renderMarkdown(markdown);
+        // 多模型：汇总报告下方折叠展示各模型原始结果（含失败标注）
+        if (Array.isArray(perModel) && perModel.length) {
+          const det = el('details', { class: 'multi-raw' });
+          det.appendChild(el('summary', {}, `各模型原始结果（${perModel.length}）`));
+          for (const pm of perModel) {
+            det.appendChild(el('h3', {}, pm.label + (pm.model ? ` · ${pm.model}` : '')));
+            if (pm.markdown) {
+              const node = el('div', { class: 'md' });
+              node.innerHTML = renderMarkdown(pm.markdown);
+              det.appendChild(node);
+            } else {
+              det.appendChild(el('div', { class: 'error-text' }, `失败：${pm.error || '未知错误'}`));
+            }
+          }
+          mdBox.appendChild(det);
+        }
         sectionFeedback = {};
         currentResult = { title: autoTitle(), markdown, stats };
         injectSectionTools(markdown);
@@ -821,12 +924,13 @@ export default {
         const followUp = buildFollowUp(markdown);
         if (followUp) mdBox.appendChild(followUp);
         notify('AI 分析完成', '多角度 Review 已生成');
-        // 历史保存失败不影响结果展示
+        // 历史保存失败不影响结果展示；记录 id 供维度标记原地更新
         try {
-          await api.saveReview({
+          const saved = await api.saveReview({
             folder: state.folder, title: currentResult.title, markdown,
             stats: { ...(stats || {}), sectionFeedback: { ...sectionFeedback } },
           });
+          if (saved && saved.id) currentResult.id = saved.id;
         } catch { /* 忽略 */ }
       } catch (err) {
         if (errText(err).includes('已被用户终止')) {
@@ -836,14 +940,33 @@ export default {
           notify('AI 分析失败', errText(err));
         }
       } finally {
-        if (unsubscribe) unsubscribe();
-        streamBox.remove();
+        if (stream.unsubscribe) stream.unsubscribe();
+        stream.streamBox.remove();
+        activeCancel = null;
+        startBtn.textContent = '开始 AI 分析';
+        startBtn.classList.remove('btn-danger');
         running = false;
-        startBtn.disabled = false;
       }
     };
 
-    startBtn.addEventListener('click', runAnalysis);
+    /** @type {(() => void) | null} */
+    let activeCancel = null;
+    startBtn.addEventListener('click', () => {
+      if (running && activeCancel) {
+        activeCancel();
+        return;
+      }
+      runAnalysis();
+    });
+
+    // ⌘Enter 开始分析（仅本 tab 可见时）
+    document.addEventListener('keydown', (ev) => {
+      if (container.hidden) return;
+      if (!ev.metaKey || ev.key !== 'Enter' || ev.shiftKey || ev.altKey || ev.ctrlKey) return;
+      if (running || startBtn.disabled) return;
+      ev.preventDefault();
+      startBtn.click();
+    });
 
     // ---------- 逐文件 ----------
     // file → 触发该文件逐文件分析（供「改动总览」的 AI 按钮跳转后调用）
@@ -883,14 +1006,7 @@ export default {
           resultBox.textContent = '';
           resultBox.appendChild(loadingNode());
           const runId = `run-${Date.now()}`;
-          const streamBox = el('div', { class: 'stream-preview', style: 'white-space: pre-wrap' });
-          const unsubscribe = typeof api.onAiChunk === 'function'
-            ? api.onAiChunk(({ runId: chunkRunId, text }) => {
-                if (chunkRunId !== runId) return;
-                if (!streamBox.parentNode) resultBox.appendChild(streamBox);
-                streamBox.textContent = text;
-              })
-            : null;
+          const stream = createStreamPreview({ el, api, runId, parent: resultBox });
           try {
             const filePayload = { folder: state.folder, file, runId };
             const plan = await loadPlanContext(api, state.folder);
@@ -910,8 +1026,8 @@ export default {
             box.appendChild(retry);
             resultBox.appendChild(box);
           } finally {
-            if (unsubscribe) unsubscribe();
-            streamBox.remove();
+            if (stream.unsubscribe) stream.unsubscribe();
+            stream.streamBox.remove();
             fileRunning = false;
             analyzeBtn.disabled = false;
           }
@@ -923,7 +1039,8 @@ export default {
     const loadHistory = async () => {
       historyPanel.textContent = '';
       if (!state.folder) {
-        historyPanel.appendChild(emptyState('请先选择项目文件夹', '点击左下角「选择项目」开始'));
+        historyPanel.appendChild(emptyState('请先选择项目文件夹', '选择一个项目后，这里会显示历史评审记录',
+          { label: '选择项目', onClick: () => ctx.selectFolder() }));
         return;
       }
       let reviews = [];
