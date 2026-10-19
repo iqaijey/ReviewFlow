@@ -64,11 +64,13 @@ export default {
         splitter.classList.remove('active');
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
+        window.removeEventListener('blur', onUp);
         const w = Math.round(fileList.getBoundingClientRect().width);
         api.saveSettings({ overviewWidth: w }).catch(() => {});
       };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
+      window.addEventListener('blur', onUp); // 窗口外松开鼠标时兜底收尾
     });
     container.appendChild(toolbar);
     container.appendChild(body);
@@ -119,7 +121,10 @@ export default {
       lastDiffRows = [];
       emptyHost.style.display = '';
       emptyHost.textContent = '';
-      emptyHost.appendChild(emptyState(text, sub));
+      // 未选项目时给出直接入口，不用去角落找按钮
+      const action = state.folder ? null
+        : { label: '选择项目', onClick: () => ctx.selectFolder() };
+      emptyHost.appendChild(emptyState(text, sub, action));
     };
 
     // ---------- 按类选择（逐句解析用） ----------
@@ -174,8 +179,20 @@ export default {
       dispatchClassSelection();
     };
 
+    const readAllBtn = el('button', { class: 'btn stat-read-all', type: 'button' }, '全部已读');
+    readAllBtn.addEventListener('click', () => {
+      const files = state.changes ? state.changes.files : [];
+      if (readSet.size >= files.length) readSet.clear();
+      else files.forEach((f) => readSet.add(f.path));
+      renderFileList(state.changes);
+      updateReadStat();
+    });
+
     const updateReadStat = () => {
-      if (readStatEl) readStatEl.textContent = `已读 ${readSet.size}`;
+      const total = state.changes ? state.changes.files.length : 0;
+      if (readStatEl) readStatEl.textContent = `已读 ${readSet.size}/${total}`;
+      readAllBtn.textContent = total && readSet.size >= total ? '清零' : '全部已读';
+      readAllBtn.style.display = total ? '' : 'none';
     };
 
     const renderStats = (changes) => {
@@ -194,8 +211,10 @@ export default {
       statsBar.appendChild(el('span', { class: 'stat-item' }, `${classCount} 个类/函数受影响`));
       statsBar.appendChild(el('span', { class: 'stat-item stat-add' }, `+${add}`));
       statsBar.appendChild(el('span', { class: 'stat-item stat-del' }, `-${del}`));
-      readStatEl = el('span', { class: 'stat-item stat-read' }, `已读 ${readSet.size}`);
+      readStatEl = el('span', { class: 'stat-item stat-read' }, `已读 ${readSet.size}/${files.length}`);
       statsBar.appendChild(readStatEl);
+      statsBar.appendChild(readAllBtn);
+      updateReadStat();
       statsBar.appendChild(el('span', { class: 'stat-item stat-hint' },
         '点击改动行 AI 解析 · 拖动或 ⌥+点击框选多行 · 点击类名按类解析'));
     };
@@ -247,7 +266,7 @@ export default {
         state.selectedLine = null;
         bus.dispatchEvent(new CustomEvent('changes:loaded', { detail: result }));
       } catch (err) {
-        alert(`${failPrefix}：${errText(err)}`);
+        toast(`${failPrefix}：${errText(err)}`, 'error');
       } finally {
         switchingBase = false;
         baseSelect.disabled = false;
@@ -270,11 +289,11 @@ export default {
       try {
         commits = await api.getCommits(state.folder);
       } catch (err) {
-        alert('获取提交列表失败：' + errText(err));
+        toast('获取提交列表失败：' + errText(err), 'error');
         return;
       }
       if (!commits.length) {
-        alert('该仓库没有提交记录');
+        toast('该仓库没有提交记录', 'error');
         return;
       }
       const overlay = el('div', { class: 'modal-overlay' });
@@ -382,15 +401,36 @@ export default {
       if (scrollToFirst && first) first.scrollIntoView({ block: 'center' });
     };
 
+    // 输入防抖：每次击键都全量重建文件列表 + 扫描 diff，大 diff 下会卡顿
+    let searchTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
     searchInput.addEventListener('input', () => {
-      searchQuery = searchInput.value.trim().toLowerCase();
-      renderFileList(state.changes);
-      applySearchHighlight(true);
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        searchTimer = null;
+        searchQuery = searchInput.value.trim().toLowerCase();
+        renderFileList(state.changes);
+        applySearchHighlight(true);
+      }, 150);
     });
 
     // ---------- 文件列表 ----------
+    /** @type {{ file: any, item: HTMLElement }[]} 当前渲染的有序文件项，供 j/k 键盘导航与 ⌘K 跳转复用 */
+    let fileItems = [];
+    const selectFile = (file, item) => {
+      state.selectedFile = file;
+      fileList.querySelectorAll('.file-item.active')
+        .forEach((n) => n.classList.remove('active'));
+      const node = item || (fileItems.find((x) => x.file === file) || {}).item;
+      if (node) {
+        node.classList.add('active');
+        node.scrollIntoView({ block: 'nearest' });
+      }
+      renderDiff(file);
+      applySearchHighlight(false);
+    };
     const renderFileList = (changes) => {
       fileList.textContent = '';
+      fileItems = [];
       if (!changes) return;
       changes.files.forEach((file) => {
         if (searchQuery && !file.path.toLowerCase().includes(searchQuery)) return;
@@ -451,13 +491,9 @@ export default {
         });
         item.appendChild(readBtn);
         item.addEventListener('click', () => {
-          state.selectedFile = file;
-          fileList.querySelectorAll('.file-item.active')
-            .forEach((n) => n.classList.remove('active'));
-          item.classList.add('active');
-          renderDiff(file);
-          applySearchHighlight(false);
+          selectFile(file, item);
         });
+        fileItems.push({ file, item });
         fileList.appendChild(item);
       });
     };
@@ -503,96 +539,23 @@ export default {
         const table = el('div', { class: 'diff-lines' });
         hunk.lines.forEach((line, lineIndex) => {
           const row = el('div', { class: `diff-line line-${line.type}` });
-          // 点击行号复制该行内容，不触发行选中
-          const lineNoCell = (text) => {
-            const cell = el('span', { class: 'line-no line-no-copy' }, text);
-            cell.addEventListener('mousedown', (ev) => ev.stopPropagation());
-            cell.addEventListener('click', (ev) => {
-              ev.stopPropagation();
-              navigator.clipboard.writeText(line.content)
-                .then(() => { if (toast) toast('已复制该行'); })
-                .catch(() => { /* 剪贴板不可用时静默 */ });
-            });
-            return cell;
-          };
+          // 行定位信息挂 dataset，行级交互由 diffView 上的事件委托统一处理（见文件底部）
+          row.dataset.lref = `${hunkIndex}:${lineIndex}`;
+          const lineNoCell = (text) => el('span', {
+            class: 'line-no line-no-copy', title: '点击复制该行',
+          }, text);
           row.appendChild(lineNoCell(line.oldLine == null ? '' : String(line.oldLine)));
           row.appendChild(lineNoCell(line.newLine == null ? '' : String(line.newLine)));
           row.appendChild(el('span', { class: 'line-content' }, line.content));
           if (line.type === 'add' || line.type === 'del') {
             row.classList.add('line-clickable');
+            row.dataset.cpos = String(clickableRows.length);
             clickableRows.push({ row, hunkIndex, line, lineIndex });
           }
           table.appendChild(row);
         });
         hunkBox.appendChild(table);
         diffView.appendChild(hunkBox);
-      });
-
-      // 选择交互：单击选中单行；拖动经过多行快速框选；⌥+点击从锚点框选
-      const clearSelected = () => {
-        diffView.querySelectorAll('.diff-line.line-selected')
-          .forEach((n) => n.classList.remove('line-selected'));
-      };
-      const highlightRange = (a, b) => {
-        clearSelected();
-        for (let i = Math.min(a, b); i <= Math.max(a, b); i++) {
-          clickableRows[i].row.classList.add('line-selected');
-        }
-      };
-      const dispatchRange = (a, b) => {
-        const picked = clickableRows.slice(Math.min(a, b), Math.max(a, b) + 1);
-        highlightRange(a, b);
-        const segments = [];
-        for (const r of picked) {
-          let seg = segments.find((s) => s.hunkIndex === r.hunkIndex);
-          if (!seg) {
-            seg = { hunkIndex: r.hunkIndex, hunk: file.hunks[r.hunkIndex], lines: [] };
-            segments.push(seg);
-          }
-          seg.lines.push(r.line);
-        }
-        const detail = { file, segments };
-        state.selectedLine = detail;
-        bus.dispatchEvent(new CustomEvent('line:select', { detail }));
-      };
-      const dispatchSingle = (r) => {
-        clearSelected();
-        r.row.classList.add('line-selected');
-        const detail = { file, hunkIndex: r.hunkIndex, line: r.line, lineIndex: r.lineIndex };
-        state.selectedLine = detail;
-        bus.dispatchEvent(new CustomEvent('line:select', { detail }));
-      };
-
-      /** @type {{ start: number, end: number, alt: boolean } | null} */
-      let drag = null;
-      clickableRows.forEach((r, pos) => {
-        r.row.addEventListener('mousedown', (ev) => {
-          if (ev.button !== 0) return;
-          ev.preventDefault(); // 阻止浏览器原生文字选中
-          drag = { start: pos, end: pos, alt: ev.altKey };
-          highlightRange(pos, pos);
-          const onUp = () => {
-            document.removeEventListener('mouseup', onUp);
-            if (!drag) return;
-            const { start, end, alt } = drag;
-            drag = null;
-            if (end !== start) {
-              state.selAnchor = { file, pos: start };
-              dispatchRange(start, end);
-            } else if (alt && state.selAnchor && state.selAnchor.file === file) {
-              dispatchRange(state.selAnchor.pos, start);
-            } else {
-              state.selAnchor = { file, pos: start };
-              dispatchSingle(clickableRows[start]);
-            }
-          };
-          document.addEventListener('mouseup', onUp);
-        });
-        r.row.addEventListener('mouseenter', () => {
-          if (!drag) return;
-          drag.end = pos;
-          highlightRange(drag.start, pos);
-        });
       });
 
       // 恢复重渲染前的滚动位置和选中行
@@ -641,5 +604,142 @@ export default {
       state.folder ? '工作区当前是干净的' : '点击左下角「选择项目」开始', !state.folder);
     rebuildBaseOptions();
     bus.addEventListener('changes:loaded', render);
+
+    // ⌘K 面板「跳转文件」：选中文件、渲染 diff、滚动到列表项
+    bus.addEventListener('file:jump', (ev) => {
+      const path = ev.detail;
+      const entry = fileItems.find((x) => x.file.path === path);
+      if (entry) selectFile(entry.file, entry.item);
+    });
+
+    // ---------- diff 行交互：事件委托（替代每行 4~6 个监听器，大 diff 下数万监听器）----------
+    // 行定位信息在渲染时写入 dataset：lref=hunkIndex:lineIndex（复制用），cpos=clickableRows 下标（选择用）
+    const clearSelected = () => {
+      diffView.querySelectorAll('.diff-line.line-selected')
+        .forEach((n) => n.classList.remove('line-selected'));
+    };
+    const highlightRange = (a, b) => {
+      clearSelected();
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) {
+        lastDiffRows[i].row.classList.add('line-selected');
+      }
+    };
+    const dispatchRange = (a, b) => {
+      const file = lastDiffFile;
+      if (!file) return;
+      const picked = lastDiffRows.slice(Math.min(a, b), Math.max(a, b) + 1);
+      highlightRange(a, b);
+      const segments = [];
+      for (const r of picked) {
+        let seg = segments.find((s) => s.hunkIndex === r.hunkIndex);
+        if (!seg) {
+          seg = { hunkIndex: r.hunkIndex, hunk: file.hunks[r.hunkIndex], lines: [] };
+          segments.push(seg);
+        }
+        seg.lines.push(r.line);
+      }
+      const detail = { file, segments };
+      state.selectedLine = detail;
+      bus.dispatchEvent(new CustomEvent('line:select', { detail }));
+    };
+    const dispatchSingle = (r) => {
+      clearSelected();
+      r.row.classList.add('line-selected');
+      const detail = { file: lastDiffFile, hunkIndex: r.hunkIndex, line: r.line, lineIndex: r.lineIndex };
+      state.selectedLine = detail;
+      bus.dispatchEvent(new CustomEvent('line:select', { detail }));
+    };
+
+    /** @type {{ start: number, end: number, alt: boolean } | null} */
+    let drag = null;
+    window.addEventListener('blur', () => { drag = null; }); // 窗口外松开鼠标时取消拖选
+
+    diffView.addEventListener('mousedown', (ev) => {
+      if (ev.button !== 0) return;
+      const target = /** @type {HTMLElement | null} */ (ev.target);
+      if (target && target.closest('.line-no-copy')) return; // 行号列负责复制，不触发选择
+      const rowEl = /** @type {HTMLElement | null} */ (target && target.closest('.diff-line'));
+      if (!rowEl || rowEl.dataset.cpos == null || !lastDiffFile) return;
+      ev.preventDefault(); // 阻止浏览器原生文字选中
+      const pos = Number(rowEl.dataset.cpos);
+      const file = lastDiffFile;
+      drag = { start: pos, end: pos, alt: ev.altKey };
+      highlightRange(pos, pos);
+      const onUp = () => {
+        document.removeEventListener('mouseup', onUp);
+        if (!drag) return;
+        const { start, end, alt } = drag;
+        drag = null;
+        if (end !== start) {
+          state.selAnchor = { file, pos: start };
+          dispatchRange(start, end);
+        } else if (alt && state.selAnchor && state.selAnchor.file === file) {
+          dispatchRange(state.selAnchor.pos, start);
+        } else {
+          state.selAnchor = { file, pos: start };
+          dispatchSingle(lastDiffRows[start]);
+        }
+      };
+      document.addEventListener('mouseup', onUp);
+    });
+
+    diffView.addEventListener('mouseover', (ev) => {
+      if (!drag) return;
+      const target = /** @type {HTMLElement | null} */ (ev.target);
+      const rowEl = /** @type {HTMLElement | null} */ (target && target.closest('.diff-line'));
+      if (!rowEl || rowEl.dataset.cpos == null) return;
+      const pos = Number(rowEl.dataset.cpos);
+      if (pos !== drag.end) {
+        drag.end = pos;
+        highlightRange(drag.start, pos);
+      }
+    });
+
+    // 行号列点击复制该行内容
+    diffView.addEventListener('click', (ev) => {
+      const target = /** @type {HTMLElement | null} */ (ev.target);
+      const cell = /** @type {HTMLElement | null} */ (target && target.closest('.line-no-copy'));
+      if (!cell || !lastDiffFile) return;
+      const rowEl = cell.closest('.diff-line');
+      if (!(rowEl instanceof HTMLElement) || !rowEl.dataset.lref) return;
+      const [hunkIndex, lineIndex] = rowEl.dataset.lref.split(':').map(Number);
+      const line = lastDiffFile.hunks[hunkIndex] && lastDiffFile.hunks[hunkIndex].lines[lineIndex];
+      if (!line) return;
+      navigator.clipboard.writeText(line.content)
+        .then(() => { if (toast) toast('已复制该行'); })
+        .catch(() => { /* 剪贴板不可用时静默 */ });
+    });
+
+    // 键盘流：j/k 上下移动文件、⌘F 聚焦搜索（仅本 tab 可见且不在输入框打字时）
+    document.addEventListener('keydown', (ev) => {
+      if (container.hidden) return;
+      const t = /** @type {HTMLElement | null} */ (ev.target);
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      if (ev.metaKey && !ev.shiftKey && !ev.altKey && !ev.ctrlKey && ev.key === 'f') {
+        ev.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+        return;
+      }
+      if (typing || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (ev.key !== 'j' && ev.key !== 'k') return;
+      if (!fileItems.length) return;
+      ev.preventDefault();
+      const idx = fileItems.findIndex((x) => x.file === state.selectedFile);
+      const next = ev.key === 'j'
+        ? Math.min(fileItems.length - 1, (idx < 0 ? -1 : idx) + 1)
+        : Math.max(0, (idx < 0 ? fileItems.length : idx) - 1);
+      selectFile(fileItems[next].file, fileItems[next].item);
+    });
+
+    // 搜索框内 Esc：清空并失焦
+    searchInput.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Escape') return;
+      if (searchInput.value) {
+        searchInput.value = '';
+        searchInput.dispatchEvent(new Event('input'));
+      }
+      searchInput.blur();
+    });
   },
 };
