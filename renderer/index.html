@@ -11,15 +11,19 @@
     <div class="sidebar-brand">
       <svg class="sidebar-logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <rect x="1.5" y="1.5" width="21" height="21" rx="6"
-          fill="rgba(78, 201, 176, 0.14)" stroke="#4ec9b0"/>
-        <path d="M7 12.5l3.2 3.2L17 9" stroke="#4ec9b0"
+          fill="rgba(86, 86, 214, 0.10)" stroke="#5656d6"/>
+        <path d="M7 12.5l3.2 3.2L17 9" stroke="#5656d6"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
       <span class="app-title">ReviewFlow</span>
     </div>
     <nav id="tab-bar"></nav>
     <div class="sidebar-footer">
-      <div id="project-path" class="project-path" title="点击选择最近项目">未选择项目</div>
+      <div id="run-indicator" class="run-indicator" style="display:none" title="查看运行详情"></div>
+      <div class="sidebar-project-row">
+        <div id="project-path" class="project-path" title="点击选择最近项目">未选择项目</div>
+        <button id="btn-theme" class="btn btn-icon" type="button" title="切换主题"></button>
+      </div>
       <div class="sidebar-actions">
         <button id="btn-select-folder" class="btn btn-primary">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
