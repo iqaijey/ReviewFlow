@@ -324,7 +324,30 @@ export default {
     const cardContent = makeCard('评审内容', '追加到 AI 评审指令中的自定义内容');
     cardContent.appendChild(customDimensionsField);
     cardContent.appendChild(customPromptField);
+    // 恢复默认：清空自定义内容，评审直接走内置默认提示词
+    const resetPromptBtn = el('button', { class: 'btn', type: 'button' }, '恢复默认');
+    const resetPromptRow = el('div', { class: 'preset-save-row' });
+    resetPromptRow.appendChild(resetPromptBtn);
+    resetPromptRow.appendChild(el('span', { class: 'settings-hint' }, '留空即使用内置默认提示词'));
+    cardContent.appendChild(resetPromptRow);
     form.appendChild(cardContent);
+
+    resetPromptBtn.addEventListener('click', async () => {
+      if (!customDimensionsInput.value.trim() && !customPromptInput.value.trim()) {
+        showMessage('当前已是默认提示词', true);
+        return;
+      }
+      if (!confirm('将清空自定义维度与自定义评审要求，恢复为内置默认提示词，继续？')) return;
+      customDimensionsInput.value = '';
+      customPromptInput.value = '';
+      try {
+        await api.saveSettings({ customDimensions: '', customPrompt: '' });
+        bus.dispatchEvent(new CustomEvent('settings:saved'));
+        showMessage('已恢复默认提示词', true);
+      } catch (err) {
+        showMessage(`恢复失败：${errText(err)}`, false);
+      }
+    });
 
     // ---------- 评审预设 ----------
     const MODEL_FIELD_BY_BACKEND = { api: 'model', opencode: 'opencodeModel', kimi: 'kimiModel', codex: 'codexModel' };
@@ -341,6 +364,13 @@ export default {
     presetSaveRow.appendChild(presetNameInput);
     presetSaveRow.appendChild(savePresetBtn);
     cardPreset.appendChild(presetSaveRow);
+    // 预设导入/导出（JSON 文件，可跨机器/团队共享）
+    const presetIoRow = el('div', { class: 'preset-save-row' });
+    const exportPresetBtn = el('button', { class: 'btn', type: 'button' }, '导出预设…');
+    const importPresetBtn = el('button', { class: 'btn', type: 'button' }, '导入预设…');
+    presetIoRow.appendChild(exportPresetBtn);
+    presetIoRow.appendChild(importPresetBtn);
+    cardPreset.appendChild(presetIoRow);
     const presetList = el('div', { class: 'preset-list' });
     cardPreset.appendChild(presetList);
     cardPreset.appendChild(el('div', { class: 'settings-hint' },
@@ -419,6 +449,29 @@ export default {
       }
     };
     renderPresetList();
+
+    exportPresetBtn.addEventListener('click', async () => {
+      try {
+        const result = await api.exportPresets();
+        if (!result) return; // 用户取消保存对话框
+        showMessage(`已导出 ${result.count} 个预设`, true);
+      } catch (err) {
+        showMessage(errText(err), false);
+      }
+    });
+
+    importPresetBtn.addEventListener('click', async () => {
+      try {
+        const result = await api.importPresets();
+        if (!result) return; // 用户取消选择文件
+        cachedPresets = Array.isArray(result.presets) ? result.presets : cachedPresets;
+        renderPresetList();
+        bus.dispatchEvent(new CustomEvent('settings:saved'));
+        showMessage(`已导入 ${result.added} 个预设`, true);
+      } catch (err) {
+        showMessage(errText(err), false);
+      }
+    });
 
     savePresetBtn.addEventListener('click', async () => {
       const name = presetNameInput.value.trim();
@@ -566,6 +619,10 @@ export default {
         });
         try {
           await api.downloadUpdate(info.dmgUrl);
+          if (offProgress) {
+            offProgress();
+            offProgress = null;
+          }
           ctx.toast('下载完成，已打开安装包，拖入「应用程序」完成更新');
           downloadBtn.textContent = '重新打开安装包';
         } catch (err) {
