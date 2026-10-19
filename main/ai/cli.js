@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { stripVTControlCharacters } = require('util');
 const state = require('./state');
 const { timeoutMs, cancelledError, killProcessGroup, ensureLane } = require('./runControl');
 
@@ -13,6 +14,31 @@ const CLI_CANDIDATES = {
 };
 
 const CLI_LABELS = { opencode: 'OpenCode', kimi: 'Kimi CLI', codex: 'Codex' };
+const activeChildren = new Set();
+let quitting = false;
+
+/** @template {import('child_process').ChildProcess} T @param {T} child @returns {T} */
+function registerChild(child) {
+  activeChildren.add(child);
+  child.once('close', () => activeChildren.delete(child));
+  return child;
+}
+
+function terminateActiveChildren() {
+  quitting = true;
+  for (const lane of state.lanes.values()) lane.currentCancel?.();
+  const children = [...activeChildren];
+  for (const child of children) killProcessGroup(child);
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      for (const child of children) {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* 进程组已退出 */ }
+        activeChildren.delete(child);
+      }
+      resolve(undefined);
+    }, 3000);
+  });
+}
 
 function resolveCliBin(backend) {
   for (const p of CLI_CANDIDATES[backend] || []) {
@@ -28,13 +54,32 @@ function shellQuote(s) {
 }
 
 function cliEnv() {
+  // 保留环境凭据和代理配置，不能用精简环境破坏用户的 CLI 登录态。
   return {
     ...process.env,
     PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
   };
 }
 
-// 各 CLI 后端的命令构建（prompt 经临时文件 + shell 命令替换传入，防引号注入）
+// macOS 的 ARG_MAX（1 MiB）限制的是全部参数 + 环境变量的总字节数，没有 Linux 那种单参数 128 KiB 上限；
+// 按实际环境扣除并留 64 KiB 余量，避免误拒中文较多的正常大批次评审。
+const MACOS_ARG_MAX = 1024 * 1024;
+const ARG_SAFETY_MARGIN = 64 * 1024;
+
+/**
+ * @param {string} text
+ * @param {string} cmd
+ * @param {Record<string, string | undefined>} env
+ */
+function exceedsArgLimit(text, cmd, env) {
+  let envBytes = 0;
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) envBytes += Buffer.byteLength(`${key}=${value}`) + 1 + 8; // NUL 结尾 + 指针
+  }
+  return Buffer.byteLength(text) + Buffer.byteLength(cmd) + envBytes + ARG_SAFETY_MARGIN > MACOS_ARG_MAX;
+}
+
+// Codex 明确支持 stdin；其他 CLI 未声明该契约，保留安全引用的参数传递。
 function buildCliCmd(backend, cfg, folder, tmpFile) {
   const bin = shellQuote(resolveCliBin(backend));
   const prompt = `"$(cat ${shellQuote(tmpFile)})"`;
@@ -55,7 +100,7 @@ function buildCliCmd(backend, cfg, folder, tmpFile) {
   if (folder) cmd += ` --cd ${shellQuote(folder)}`;
   if (cfg.codexModel) cmd += ` --model ${shellQuote(cfg.codexModel)}`;
   if (cfg.reasoningEffort) cmd += ` -c model_reasoning_effort=${shellQuote(cfg.reasoningEffort)}`;
-  return `${cmd} ${prompt} < /dev/null`;
+  return `${cmd} - < ${shellQuote(tmpFile)}`;
 }
 
 // 供「运行详情」展示的命令形态（不含临时文件路径）
@@ -76,7 +121,7 @@ function cliCmdLabel(backend, cfg, folder) {
     if (cfg.codexModel) parts.push('--model', cfg.codexModel);
     if (cfg.reasoningEffort) parts.push('-c', `model_reasoning_effort=${cfg.reasoningEffort}`);
   }
-  parts.push('< /dev/null');
+  parts.push(backend === 'codex' ? '- < <prompt>' : '< /dev/null');
   return parts.join(' ');
 }
 
@@ -84,6 +129,7 @@ function cliCmdLabel(backend, cfg, folder) {
 // 注意：直接 execFile 这些二进制会挂起（疑似其进程/会话检测），必须经 bash 启动。
 function chatViaCli(backend, cfg, messages, folder, runId) {
   const lane = ensureLane(runId);
+  if (lane.cancelled || quitting) return Promise.reject(cancelledError());
   if (!resolveCliBin(backend)) {
     const guide = backend === 'codex'
       ? '未找到 codex 命令行，请先安装（brew install codex）并运行 codex login'
@@ -101,11 +147,30 @@ function chatViaCli(backend, cfg, messages, folder, runId) {
     `auto-review-prompt-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.txt`,
   );
   const cmd = buildCliCmd(backend, cfg, folder, tmpFile);
+  if (backend !== 'codex' && exceedsArgLimit(text, cmd, cliEnv())) {
+    return Promise.reject(new Error('CLI 参数内容过大，请减少上下文或改用 API 后端'));
+  }
   const cliTimeout = timeoutMs(cfg);
   return new Promise((resolve, reject) => {
+    let cancelledByUser = false;
+    /** @type {import('child_process').ChildProcess | null} */
+    let child = null;
+    const cancel = () => {
+      cancelledByUser = true;
+      if (child) killProcessGroup(child);
+    };
+    lane.currentCancel = cancel;
+    const clearCancel = () => { if (lane.currentCancel === cancel) lane.currentCancel = null; };
     fs.writeFile(tmpFile, text, { encoding: 'utf8', mode: 0o600 }, (werr) => {
       if (werr) {
+        clearCancel();
         reject(new Error(`无法写入临时 prompt 文件: ${werr.message}`));
+        return;
+      }
+      if (cancelledByUser || lane.cancelled || quitting) {
+        fs.unlink(tmpFile, (error) => { if (error) console.warn('无法清理临时 prompt 文件'); });
+        clearCancel();
+        reject(cancelledError());
         return;
       }
       let timedOut = false;
@@ -113,13 +178,16 @@ function chatViaCli(backend, cfg, messages, folder, runId) {
       // @types/node 的 ExecFileOptions 未声明 detached（运行时会透传给 spawn），
       // 抽成变量绕开对象字面量的多余属性检查
       const execOptions = { shell: '/bin/bash', maxBuffer: 10 * 1024 * 1024, env: cliEnv(), detached: true };
-      const child = execFile(
+      const spawned = registerChild(execFile(
         cmd,
         execOptions,
         (err, stdout, stderr) => {
           clearTimeout(timer);
-          fs.unlink(tmpFile, () => {});
+          clearCancel();
+          fs.unlink(tmpFile, (error) => { if (error) console.warn('无法清理临时 prompt 文件'); });
+          sendPreview(true);
           const label = CLI_LABELS[backend] || backend;
+          if (cancelledByUser || lane.cancelled) { reject(cancelledError()); return; }
           if (err) {
             if (cancelledByUser) {
               reject(cancelledError());
@@ -146,16 +214,26 @@ function chatViaCli(backend, cfg, messages, folder, runId) {
           }
           resolve(content);
         },
-      );
-      let cancelledByUser = false;
+      ));
+      child = spawned;
+      let preview = '';
+      let lastSentAt = 0;
+      let lastSentLen = 0;
+      const sendPreview = (force) => {
+        if (!state.chunkSender || !runId || !preview) return;
+        const now = Date.now();
+        const clean = stripVTControlCharacters(preview);
+        if (!force && now - lastSentAt < 100 && clean.length - lastSentLen < 2048) return;
+        lastSentAt = now;
+        lastSentLen = clean.length;
+        state.chunkSender(runId, clean);
+      };
+      spawned.stdout?.setEncoding('utf8');
+      spawned.stdout?.on('data', (chunk) => { preview += chunk; sendPreview(false); });
       const timer = setTimeout(() => {
         timedOut = true;
         killProcessGroup(child);
       }, cliTimeout);
-      lane.currentCancel = () => {
-        cancelledByUser = true;
-        killProcessGroup(child);
-      };
     });
   });
 }
@@ -167,10 +245,12 @@ function listOpencodeModels() {
     return Promise.reject(new Error('未找到 opencode 命令行，请先安装（brew install opencode）'));
   }
   const cmd = `${shellQuote(bin)} models < /dev/null`;
+  if (quitting) return Promise.reject(cancelledError());
   return new Promise((resolve, reject) => {
-    execFile(
+    const options = { shell: '/bin/bash', maxBuffer: 5 * 1024 * 1024, timeout: 60_000, env: cliEnv(), detached: true };
+    registerChild(execFile(
       cmd,
-      { shell: '/bin/bash', maxBuffer: 5 * 1024 * 1024, timeout: 60_000, env: cliEnv() },
+      options,
       (err, stdout, stderr) => {
         if (err) {
           const detail = String(stderr || err.message || '').slice(0, 300);
@@ -183,7 +263,7 @@ function listOpencodeModels() {
           .filter(Boolean);
         resolve([...new Set(ids)].sort());
       },
-    );
+    ));
   });
 }
 
@@ -193,10 +273,12 @@ function listCodexModels() {
     return Promise.reject(new Error('未找到 codex 命令行，请先安装（brew install codex）'));
   }
   const cmd = `${shellQuote(resolveCliBin('codex'))} debug models < /dev/null`;
+  if (quitting) return Promise.reject(cancelledError());
   return new Promise((resolve, reject) => {
-    execFile(
+    const options = { shell: '/bin/bash', maxBuffer: 10 * 1024 * 1024, timeout: 60_000, env: cliEnv(), detached: true };
+    registerChild(execFile(
       cmd,
-      { shell: '/bin/bash', maxBuffer: 10 * 1024 * 1024, timeout: 60_000, env: cliEnv() },
+      options,
       (err, stdout, stderr) => {
         if (err) {
           reject(new Error(`codex 获取模型列表失败: ${String(stderr || err.message || '').slice(0, 300)}`));
@@ -212,8 +294,8 @@ function listCodexModels() {
           reject(new Error('codex 模型列表解析失败'));
         }
       },
-    );
+    ));
   });
 }
 
-module.exports = { resolveCliBin, cliCmdLabel, chatViaCli, listOpencodeModels, listCodexModels };
+module.exports = { resolveCliBin, cliCmdLabel, chatViaCli, listOpencodeModels, listCodexModels, registerChild, activeChildren, terminateActiveChildren, exceedsArgLimit };
