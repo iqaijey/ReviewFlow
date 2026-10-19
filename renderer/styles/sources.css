@@ -1,0 +1,311 @@
+/* ReviewFlow - 改动来源扩展、排除与限流提示、生效规则弹窗、排除规则与费用单价设置样式 */
+
+/* ---------- 总览：提交语义提示 ---------- */
+.source-semantics-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--info-bg);
+  color: var(--info);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 420px;
+}
+
+.source-semantics-note.is-warning {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.source-semantics-note[hidden] {
+  display: none;
+}
+
+/* ---------- 总览：限流/截断可关闭提示条 ---------- */
+.overview-limits-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.overview-limits-banner[hidden] {
+  display: none;
+}
+
+.limits-banner-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.limits-banner-summary {
+  flex: 1;
+  min-width: 0;
+  color: var(--warning);
+  font-weight: 500;
+}
+
+.limits-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.limits-banner-btn {
+  min-height: 24px;
+  padding: 1px 10px;
+  font-size: 11px;
+}
+
+.limits-banner-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.limits-banner-details[hidden] {
+  display: none;
+}
+
+.limits-detail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.limits-detail-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.limits-detail-list {
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* ---------- 总览：已排除文件项与徽标 ---------- */
+.file-item.file-excluded {
+  opacity: 0.62;
+}
+
+.file-item.file-excluded .file-name {
+  color: var(--text-dim);
+}
+
+.excluded-badge,
+.resource-badge {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  line-height: 1.4;
+  background: var(--panel-raised);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  user-select: none;
+}
+
+.stat-excluded {
+  color: var(--text-dim);
+}
+
+/* ---------- 生效规则弹窗 ---------- */
+.effective-rules-modal {
+  width: 680px;
+  max-width: 92vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.effective-rules-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.effective-rules-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.effective-rules-body {
+  padding: 12px 16px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.effective-rules-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.effective-rules-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.effective-rules-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.effective-rules-file-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.effective-rules-file-chars {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.effective-rules-badge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+}
+
+.effective-rules-badge.is-included {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.effective-rules-badge.is-truncated {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.effective-rules-badge.is-omitted {
+  background: var(--panel-raised);
+  color: var(--text-faint);
+}
+
+.effective-rules-text {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ---------- AI 设置：排除规则与费用单价编辑器 ---------- */
+.settings-section-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-inline-msg {
+  font-size: 12px;
+  min-height: 18px;
+}
+
+.settings-inline-msg.is-ok {
+  color: var(--success);
+}
+
+.settings-inline-msg.is-err {
+  color: var(--danger);
+}
+
+.pricing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pricing-header,
+.pricing-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.5fr) minmax(90px, 1fr) minmax(90px, 1fr) 84px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.pricing-header {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 0 2px;
+}
+
+.pricing-row .settings-input {
+  max-width: none;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.pricing-remove-btn {
+  padding: 3px 8px;
+  min-height: 28px;
+}
