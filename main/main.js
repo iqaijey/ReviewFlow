@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, screen, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -77,7 +77,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 700,
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#0d1117',
+    backgroundColor: '#f4f5f7',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -154,6 +154,14 @@ function registerIpcHandlers() {
   ipcMain.handle('app:getInitialFolder', async () => getInitialFolder());
   ipcMain.handle('app:getVersion', async () => app.getVersion());
 
+  // 渲染进程主题切换时同步窗口底色，避免深色模式启动/刷新闪白
+  ipcMain.on('app:setTheme', (event, theme) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) {
+      win.setBackgroundColor(theme === 'dark' ? '#0d1117' : '#f4f5f7');
+    }
+  });
+
   ipcMain.handle('icon:pick', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openFile'],
@@ -217,6 +225,49 @@ function registerIpcHandlers() {
     return settingsStore.saveSettings(settings);
   });
 
+  // 预设导出：JSON 文件，含格式标识与版本，便于校验与后续兼容
+  ipcMain.handle('preset:export', async (event) => {
+    const { presets } = await settingsStore.getSettings();
+    if (!Array.isArray(presets) || !presets.length) {
+      throw new Error('暂无可导出的预设');
+    }
+    const result = await dialog.showSaveDialog({
+      title: '导出评审预设',
+      defaultPath: 'reviewflow-presets.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    const payload = {
+      app: 'reviewflow',
+      kind: 'presets',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      presets,
+    };
+    await fs.promises.writeFile(result.filePath, JSON.stringify(payload, null, 2), 'utf8');
+    return { count: presets.length, filePath: result.filePath };
+  });
+
+  // 预设导入：逐项校验与规范化；重名加「（导入）」后缀，id 冲突时重新生成
+  ipcMain.handle('preset:import', async (event) => {
+    const result = await dialog.showOpenDialog({
+      title: '导入评审预设',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    let data;
+    try {
+      data = JSON.parse(await fs.promises.readFile(result.filePaths[0], 'utf8'));
+    } catch {
+      throw new Error('导入失败：文件不是有效的 JSON');
+    }
+    const current = await settingsStore.getSettings();
+    const { imported, presets } = settingsStore.mergeImportedPresets(data, current.presets);
+    await settingsStore.saveSettings({ presets });
+    return { added: imported.length, presets };
+  });
+
   ipcMain.handle('ai:analyzeOverview', async (event, payload) => {
     try {
       ai.setChunkSender((runId, text) => {
@@ -225,6 +276,17 @@ function registerIpcHandlers() {
       return await ai.analyzeOverview(payload);
     } catch (err) {
       throw new Error(`AI 概述分析失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('ai:analyzeOverviewMulti', async (event, payload) => {
+    try {
+      ai.setChunkSender((runId, text) => {
+        if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+      });
+      return await ai.analyzeOverviewMulti(payload);
+    } catch (err) {
+      throw new Error(`多模型分析失败：${err.message}`);
     }
   });
 
@@ -263,6 +325,14 @@ function registerIpcHandlers() {
       return store.saveReview(payload);
     } catch (err) {
       throw new Error(`保存评审失败：${err.message}`);
+    }
+  });
+
+  ipcMain.handle('review:updateStats', async (_event, payload) => {
+    try {
+      return store.updateReviewStats(payload);
+    } catch (err) {
+      throw new Error(`更新评审失败：${err.message}`);
     }
   });
 
@@ -339,6 +409,8 @@ function registerIpcHandlers() {
   ipcMain.handle('ai:getCurrentRun', async () => ai.getCurrentRun());
 
   ipcMain.handle('ai:listRuns', async () => ai.getRuns());
+
+  ipcMain.handle('ai:getRunPrompt', async (_event, runId) => ai.getRunPrompt(runId));
 
   ipcMain.handle('ai:cancel', async (_event, runId) => ai.cancelRun(runId));
 
@@ -501,6 +573,47 @@ function registerIpcHandlers() {
   });
 }
 
+// macOS 标准应用菜单：不注册时 ⌘C/⌘V/⌘A/⌘Z 在输入框全部失效（Electron 由菜单 role 触发编辑命令）
+function registerAppMenu() {
+  /** @type {import('electron').MenuItemConstructorOptions[]} */
+  const template = [
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about', label: `关于 ${app.name}` },
+        { type: 'separator' },
+        { role: 'hide', label: '隐藏' },
+        { role: 'hideOthers', label: '隐藏其他' },
+        { role: 'unhide', label: '全部显示' },
+        { type: 'separator' },
+        { role: 'quit', label: `退出 ${app.name}` },
+      ],
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '拷贝' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'selectAll', label: '全选' },
+      ],
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { role: 'minimize', label: '最小化' },
+        { role: 'zoom', label: '缩放' },
+        { type: 'separator' },
+        { role: 'close', label: '关闭窗口' },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.whenReady().then(() => {
   // 开发模式下 Dock 也使用自定义图标（打包后由 bundle 自带）
   if (!app.isPackaged && app.dock) {
@@ -509,6 +622,7 @@ app.whenReady().then(() => {
     } catch { /* 图标加载失败不影响启动 */ }
   }
   iconManager.applyOnStartup();
+  registerAppMenu();
   registerIpcHandlers();
   createWindow();
 

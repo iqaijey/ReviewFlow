@@ -5,6 +5,7 @@ type Unsubscribe = () => void;
 interface AutoReviewApi {
   getInitialFolder(): Promise<string | null>;
   getVersion(): Promise<string>;
+  setWindowTheme(theme: string): void;
   pickIconImage(): Promise<any>;
   applyIcon(imagePath: string): Promise<any>;
   resetIcon(): Promise<any>;
@@ -15,7 +16,10 @@ interface AutoReviewApi {
   getCommits(folder: string): Promise<any>;
   getSettings(): Promise<any>;
   saveSettings(settings: any): Promise<any>;
+  exportPresets(): Promise<any>;
+  importPresets(): Promise<any>;
   analyzeOverview(payload: any): Promise<any>;
+  analyzeOverviewMulti(payload: any): Promise<any>;
   analyzeFile(payload: any): Promise<any>;
   explainFull(payload: any): Promise<any>;
   explainChange(payload: any): Promise<any>;
@@ -23,12 +27,14 @@ interface AutoReviewApi {
   listModels(settings: any): Promise<any>;
   getCurrentRun(): Promise<any>;
   listRuns(): Promise<any[]>;
+  getRunPrompt(runId: string): Promise<string>;
   cancelRun(runId?: string): Promise<any>;
   pauseRun(runId?: string): Promise<any>;
   resumeRun(runId?: string): Promise<any>;
   explainFollowUp(payload: any): Promise<any>;
   reviewFollowUp(payload: any): Promise<any>;
   saveReview(payload: any): Promise<any>;
+  updateReviewStats(payload: any): Promise<any>;
   listReviews(folder: string): Promise<any>;
   checklistList(folder: string): Promise<any>;
   checklistSave(payload: any): Promise<any>;
