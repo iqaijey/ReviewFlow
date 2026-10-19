@@ -2,6 +2,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const path = require('path');
+const fileCache = require('./fileContentCache');
 
 const execFileAsync = promisify(execFile);
 
@@ -70,8 +71,10 @@ async function getChanges(folder, options) {
           ? ['diff', 'HEAD', '--unified=3', '--no-color']
           : ['diff', '--cached', '--unified=3', '--no-color']
       );
-    } catch {
-      diffText = '';
+    } catch (err) {
+      // 无 HEAD 的场景已由 hasHead 分支覆盖，走到这里的失败都是真错误，不能静默当成「没有改动」
+      const detail = String((err && err.stderr) || (err && err.message) || '').trim();
+      throw new Error(`读取改动失败：${detail.slice(0, 200) || 'git diff 执行失败'}`);
     }
   }
 
@@ -460,7 +463,8 @@ function extractClasses(folder, file) {
   } else if (file.status === 'deleted') {
     content = reconstructOldContent(file);
   } else {
-    content = fs.readFileSync(path.join(folder, file.path), 'utf8');
+    content = fileCache.readFile(folder, file.path);
+    if (content == null) return [];
   }
   const lines = content.split('\n');
   const decls = findDeclarations(file.path, lines);

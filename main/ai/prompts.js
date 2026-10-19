@@ -1,5 +1,4 @@
-const fs = require('fs');
-const path = require('path');
+const fileCache = require('../fileContentCache');
 
 const STATUS_LABELS = {
   modified: '修改',
@@ -28,12 +27,9 @@ const HUNK_WINDOW = 15; // 每个改动块额外携带的前后行数
 // 文件被删除、不存在或读取失败时返回空串。
 function buildContext(folder, file) {
   if (!folder || !file || !file.path || file.status === 'deleted') return '';
-  let lines;
-  try {
-    lines = fs.readFileSync(path.join(folder, file.path), 'utf8').split('\n');
-  } catch {
-    return '';
-  }
+  const text = fileCache.readFile(folder, file.path);
+  if (text == null) return '';
+  const lines = text.split('\n');
   const blocks = [];
   const targets = (Array.isArray(file.classes) ? file.classes : [])
     .filter((c) => c && c.changed && c.startLine > 0 && c.endLine >= c.startLine);
