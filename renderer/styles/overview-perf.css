@@ -1,0 +1,77 @@
+/* ReviewFlow - 改动总览性能与无障碍增强样式 */
+
+.file-item:focus-visible {
+  outline: none;
+  box-shadow: inset 2px 0 0 var(--accent), 0 0 0 2px var(--accent-ring);
+  background: var(--hover-1);
+}
+
+.file-item.active:focus-visible {
+  background: var(--accent-bg-subtle);
+  box-shadow: inset 2px 0 0 var(--accent), 0 0 0 2px var(--accent-ring);
+}
+
+.file-item:focus-within .read-btn {
+  display: inline-block;
+}
+
+button.hunk-header {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border-left: none;
+  border-right: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+button.hunk-header:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.diff-line.line-clickable:focus-visible {
+  outline: none;
+  box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px var(--accent-border);
+}
+
+.overview-stats {
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: var(--space-2);
+  column-gap: var(--space-4);
+}
+
+.overview-stats .stat-item {
+  white-space: nowrap;
+}
+
+.overview-stats .stat-hint {
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.overview-body .diff-view {
+  scroll-padding-top: var(--space-6);
+}
+
+.diff-hunk > .hunk-header {
+  margin-bottom: var(--space-1);
+}
+
+.diff-lines > .diff-line {
+  scroll-margin-top: var(--space-6);
+}
+
+.splitter:focus-visible {
+  outline: none;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+
+.diff-lazy-sentinel,
+.file-list-sentinel {
+  height: 1px;
+  width: 100%;
+  pointer-events: none;
+}
