@@ -1,0 +1,487 @@
+/* ReviewFlow - 结构化问题清单、过滤、不处理弹窗、规则建议与噪声控制样式 */
+
+/* ---------- 问题清单整体容器 ---------- */
+.findings-panel {
+  margin: 10px 16px 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.findings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.findings-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.findings-summary {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 过滤器栏 ---------- */
+.findings-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+
+.findings-filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.findings-filter-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.findings-filter-select {
+  width: auto;
+  min-width: 110px;
+  max-width: 180px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.findings-filter-reset {
+  margin-left: auto;
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/* ---------- 问题列表项 ---------- */
+.findings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.finding-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+
+.finding-row:hover {
+  border-color: var(--border-strong);
+}
+
+.finding-row.finding-status-fixed,
+.finding-row.finding-status-outdated,
+.finding-row.finding-status-wontfix {
+  opacity: 0.78;
+}
+
+.finding-main {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---------- 严重度与分类徽标 ---------- */
+.finding-severity,
+.finding-category,
+.finding-status-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  border: 1px solid transparent;
+  font-variant-numeric: tabular-nums;
+}
+
+.finding-severity-high {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.finding-severity-medium {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.finding-severity-low {
+  background: var(--info-bg);
+  color: var(--info);
+  border-color: var(--info);
+}
+
+.finding-severity-unlabeled {
+  background: var(--panel-raised);
+  color: var(--text-dim);
+  border-color: var(--border-strong);
+}
+
+.finding-category {
+  background: var(--accent-bg-subtle);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+/* ---------- 状态徽标 ---------- */
+.finding-status-badge.status-pending {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.finding-status-badge.status-partial {
+  background: var(--info-bg);
+  color: var(--info);
+  border-color: var(--info);
+}
+
+.finding-status-badge.status-fixed {
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.finding-status-badge.status-outdated {
+  background: var(--panel-raised);
+  color: var(--text-dim);
+  border-color: var(--border-strong);
+}
+
+.finding-status-badge.status-wontfix {
+  background: var(--panel-raised);
+  color: var(--text-faint);
+  border-color: var(--border);
+}
+
+/* ---------- 位置跳转按钮 ---------- */
+.finding-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--info);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.finding-location:hover:not(:disabled) {
+  background: var(--info-bg);
+  border-color: var(--info);
+}
+
+.finding-location:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.finding-location.finding-location-unknown {
+  color: var(--text-faint);
+  border-color: var(--border);
+  cursor: default;
+}
+
+/* ---------- 问题描述与核对/不处理详情 ---------- */
+.finding-text {
+  flex: 1 1 260px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.finding-row.finding-status-fixed .finding-text {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+
+.finding-row.finding-status-wontfix .finding-text,
+.finding-row.finding-status-outdated .finding-text {
+  color: var(--text-dim);
+}
+
+.finding-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.finding-action-btn {
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.finding-meta-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding-left: 2px;
+}
+
+.finding-verdict-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--panel-raised);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}
+
+.finding-verdict-conflict {
+  color: var(--warning);
+  background: var(--warning-bg);
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  font-size: 11px;
+}
+
+.finding-empty-filtered {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* ---------- 规则建议区域 ---------- */
+.rule-suggestions-box {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-md);
+  background: var(--accent-bg-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rule-suggestions-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.rule-suggestion-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+
+.rule-suggestion-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.rule-suggestion-scope {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  background: var(--panel-raised);
+  color: var(--text-dim);
+}
+
+.rule-suggestion-reason {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.rule-suggestion-text {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.rule-suggestion-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ---------- 弹窗（不处理原因 & 规则预览确认） ---------- */
+.findings-dialog {
+  width: 520px;
+  max-width: 92vw;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.findings-dialog-wide {
+  width: 660px;
+}
+
+.findings-dialog-body {
+  padding: 14px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.findings-reason-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.findings-reason-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.findings-reason-option:hover {
+  border-color: var(--border-strong);
+  background: var(--hover-1);
+}
+
+.findings-reason-option input[type="radio"] {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.findings-dialog-textarea {
+  width: 100%;
+  max-width: none;
+  min-height: 80px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.findings-dialog-textarea-mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  min-height: 120px;
+}
+
+.findings-preview-box {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  user-select: text;
+}
+
+.findings-warning-banner {
+  padding: 8px 10px;
+  border: 1px solid var(--warning);
+  border-radius: var(--r-sm);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.findings-error-inline {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* ---------- 改动总览跳转高亮 ---------- */
+.diff-line.line-jump-target {
+  background: var(--match-bg);
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+/* ---------- AI 设置：评审噪声卡片 ---------- */
+.settings-noise-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+/* ---------- Review 工具栏：单次噪声覆盖 ---------- */
+.review-noise-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.review-noise-select {
+  width: auto;
+  min-width: 116px;
+  padding: 4px 8px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
