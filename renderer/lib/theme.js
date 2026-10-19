@@ -11,7 +11,7 @@ export function createThemeManager({ onChange } = {}) {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved && MODES.includes(saved)) mode = saved;
-  } catch { /* localStorage 不可用时保持 auto */ }
+  } catch { console.warn('读取主题偏好失败'); }
   const media = window.matchMedia('(prefers-color-scheme: dark)');
 
   const resolvedMode = () => (mode === 'auto' ? (media.matches ? 'dark' : 'light') : mode);
@@ -25,7 +25,7 @@ export function createThemeManager({ onChange } = {}) {
   function setMode(next) {
     if (!MODES.includes(next)) return;
     mode = next;
-    try { localStorage.setItem(STORAGE_KEY, next); } catch { /* 忽略持久化失败 */ }
+    try { localStorage.setItem(STORAGE_KEY, next); } catch { console.warn('保存主题偏好失败'); }
     apply();
   }
 

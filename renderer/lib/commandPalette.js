@@ -7,6 +7,8 @@ export function createCommandPalette({ el, getItems }) {
   let input = null;
   /** @type {HTMLElement | null} */
   let listEl = null;
+  /** @type {HTMLElement | null} */
+  let openerEl = null;
   let allItems = [];
   let filtered = [];
   let activeIndex = 0;
@@ -14,13 +16,18 @@ export function createCommandPalette({ el, getItems }) {
 
   const isOpen = () => overlay !== null;
 
-  function close() {
+  function close({ restoreFocus = true } = {}) {
     const ov = overlay;
     if (!ov) return;
     ov.remove();
     overlay = null;
     input = null;
     listEl = null;
+    const prev = openerEl;
+    openerEl = null;
+    if (restoreFocus && prev && document.contains(prev) && typeof prev.focus === 'function') {
+      prev.focus();
+    }
   }
 
   // 子序列匹配：返回命中下标数组，未命中返回 null
@@ -94,22 +101,27 @@ export function createCommandPalette({ el, getItems }) {
     if (!list) return;
     list.textContent = '';
     if (!filtered.length) {
-      list.appendChild(el('div', { class: 'palette-empty' }, '没有匹配的命令'));
+      if (input) input.removeAttribute('aria-activedescendant');
+      list.appendChild(el('div', { class: 'palette-empty', role: 'status' }, '没有匹配的命令'));
       return;
     }
     let lastGroup = null;
     filtered.forEach((item, i) => {
       if (item.group !== lastGroup) {
         lastGroup = item.group;
-        list.appendChild(el('div', { class: 'palette-group' }, item.group));
+        list.appendChild(el('div', { class: 'palette-group', role: 'presentation' }, item.group));
       }
+      const itemId = `palette-item-${i}`;
       const btn = el('button', {
+        id: itemId,
         class: `palette-item${i === activeIndex ? ' active' : ''}`,
         type: 'button',
-        onClick: () => { close(); item.run(); },
+        role: 'option',
+        'aria-selected': i === activeIndex ? 'true' : 'false',
+        onClick: () => { close({ restoreFocus: false }); item.run(); },
       });
       if (item.iconHtml) {
-        const icon = el('span', { class: 'palette-item-icon' });
+        const icon = el('span', { class: 'palette-item-icon', 'aria-hidden': 'true' });
         icon.innerHTML = item.iconHtml;
         btn.appendChild(icon);
       }
@@ -121,6 +133,9 @@ export function createCommandPalette({ el, getItems }) {
       });
       list.appendChild(btn);
     });
+    if (input) {
+      input.setAttribute('aria-activedescendant', `palette-item-${activeIndex}`);
+    }
   }
 
   // 只重绘选中态，避免鼠标移动时重建整个列表
@@ -128,7 +143,13 @@ export function createCommandPalette({ el, getItems }) {
     const list = listEl;
     if (!list) return;
     const items = list.querySelectorAll('.palette-item');
-    items.forEach((node, i) => node.classList.toggle('active', i === activeIndex));
+    items.forEach((node, i) => {
+      node.classList.toggle('active', i === activeIndex);
+      node.setAttribute('aria-selected', i === activeIndex ? 'true' : 'false');
+    });
+    if (input && filtered.length) {
+      input.setAttribute('aria-activedescendant', `palette-item-${activeIndex}`);
+    }
   }
 
   function scrollActiveIntoView() {
@@ -140,25 +161,42 @@ export function createCommandPalette({ el, getItems }) {
 
   async function open() {
     if (overlay) { close(); return; }
+    openerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const ov = el('div', { class: 'palette-overlay' });
+    const listId = 'command-palette-listbox';
     const inp = /** @type {HTMLInputElement} */ (el('input', {
       class: 'palette-input', type: 'text',
+      role: 'combobox',
+      'aria-expanded': 'true',
+      'aria-autocomplete': 'list',
+      'aria-controls': listId,
+      'aria-label': '搜索命令',
       placeholder: '搜索页面、动作、最近项目…', spellcheck: 'false',
     }));
-    const list = el('div', { class: 'palette-list' });
+    const list = el('div', {
+      id: listId,
+      class: 'palette-list',
+      role: 'listbox',
+      'aria-label': '命令列表',
+    });
     overlay = ov;
     input = inp;
     listEl = list;
-    const panel = el('div', { class: 'palette' });
+    const panel = el('div', {
+      class: 'palette',
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-label': '命令面板',
+    });
     const searchRow = el('div', { class: 'palette-search' });
     searchRow.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" ' +
-      'stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+      'stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">' +
       '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
     searchRow.appendChild(inp);
     panel.appendChild(searchRow);
     panel.appendChild(list);
     // 底部按键提示条（Raycast/Linear 风格）
-    const footer = el('div', { class: 'palette-footer' });
+    const footer = el('div', { class: 'palette-footer', 'aria-hidden': 'true' });
     for (const [key, label] of [['↑↓', '选择'], ['↵', '执行'], ['esc', '关闭']]) {
       const hint = el('span', {});
       hint.appendChild(el('span', { class: 'palette-kbd' }, key));
@@ -182,7 +220,7 @@ export function createCommandPalette({ el, getItems }) {
       } else if (ev.key === 'Enter') {
         ev.preventDefault();
         const item = filtered[activeIndex];
-        if (item) { close(); item.run(); }
+        if (item) { close({ restoreFocus: false }); item.run(); }
       } else if (ev.key === 'Escape') {
         ev.preventDefault();
         close();
