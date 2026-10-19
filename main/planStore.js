@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { writeFileAtomic, readJsonFile: readJson } = require('./atomicFile');
 
 const MAX_PLANS_PER_FOLDER = 10;
 
@@ -21,22 +22,12 @@ function folderDir(folder) {
 }
 
 function planDir(folder, planId) {
-  const safeId = path.basename(String(planId || ''));
-  return path.join(folderDir(folder), safeId);
-}
-
-function readJson(file, fallback) {
-  try {
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return data ?? fallback;
-  } catch {
-    return fallback;
-  }
+  if (typeof planId !== 'string' || !/^[a-z0-9]{6,40}$/.test(planId)) throw new Error('方案 ID 无效：必须为 6–40 位小写字母或数字');
+  return path.join(folderDir(folder), planId);
 }
 
 function writeJson(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+  writeFileAtomic(file, JSON.stringify(data, null, 2), 'utf8');
 }
 
 function readText(file, fallback = '') {
@@ -97,7 +88,7 @@ function listPlanIds(folder) {
   return entries
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
-    .filter((name) => readMeta(path.join(dir, name)));
+    .filter((name) => /^[a-z0-9]{6,40}$/.test(name) && readMeta(path.join(dir, name)));
 }
 
 function listPlans(folder) {
@@ -124,6 +115,8 @@ function listPlans(folder) {
 
 function createPlan({ folder, title, prdFileName, prdText }) {
   assertFolder(folder);
+  if (prdText !== undefined && typeof prdText !== 'string') throw new Error('PRD 内容必须为文本');
+  if (Buffer.byteLength(prdText || '', 'utf8') > 2 * 1024 * 1024) throw new Error('PRD 文本不能超过 2 MiB');
   const dir = folderDir(folder);
   const id = newPlanId();
   const meta = {
@@ -137,7 +130,7 @@ function createPlan({ folder, title, prdFileName, prdText }) {
   const pdir = path.join(dir, id);
   fs.mkdirSync(path.join(pdir, 'images'), { recursive: true });
   writeJson(path.join(pdir, 'meta.json'), meta);
-  fs.writeFileSync(path.join(pdir, 'prd.txt'), prdText || '', 'utf8');
+  writeFileAtomic(path.join(pdir, 'prd.txt'), prdText || '', 'utf8');
 
   const existing = listPlanIds(folder)
     .map((pid) => ({ id: pid, meta: readMeta(path.join(dir, pid)) }))
@@ -156,7 +149,29 @@ function addPlanImage({ folder, planId, name, base64 }) {
   if (!base64 || typeof base64 !== 'string') throw new Error('添加图片失败：图片数据为空');
 
   let safeName = sanitizeImageName(name);
+  const raw = base64.replace(/^data:[^;]+;base64,/, '');
+  if (raw.length > Math.ceil(10 * 1024 * 1024 / 3) * 4) throw new Error('单张设计稿不能超过 10 MiB');
+  if (raw.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(raw) || !/^[A-Za-z0-9+/]*={0,2}$/.test(raw)) throw new Error('图片数据不是有效的 base64');
+  const image = Buffer.from(raw, 'base64');
+  if (image.length > 10 * 1024 * 1024) throw new Error('单张设计稿不能超过 10 MiB');
+  const ext = path.extname(safeName).toLowerCase();
+  const validType = {
+    '.png': image.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')),
+    '.jpg': image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff,
+    '.jpeg': image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff,
+    '.gif': /^GIF8[79]a/.test(image.subarray(0, 6).toString('ascii')),
+    '.webp': image.subarray(0, 4).toString() === 'RIFF' && image.subarray(8, 12).toString() === 'WEBP',
+    '.bmp': image.subarray(0, 2).toString() === 'BM',
+    '.svg': /^\s*(?:<\?xml[^>]*>\s*)?<svg[\s>]/i.test(image.toString('utf8', 0, 1024)),
+  }[ext];
+  const declared = base64.match(/^data:([^;]+);base64,/);
+  if (!validType || (declared && declared[1] !== mimeFor(safeName))) throw new Error('设计稿图片类型无效或与文件名不匹配');
   const imageDir = path.join(pdir, 'images');
+  const totalBytes = meta.images.filter((item) => item !== safeName).reduce((total, item) => {
+    try { return total + fs.statSync(path.join(imageDir, path.basename(item))).size; }
+    catch (error) { if (error.code === 'ENOENT') return total; throw error; }
+  }, image.length);
+  if (totalBytes > 40 * 1024 * 1024) throw new Error('每个方案设计稿总量不能超过 40 MiB');
   fs.mkdirSync(imageDir, { recursive: true });
   let target = path.join(imageDir, safeName);
   if (fs.existsSync(target) && !meta.images.includes(safeName)) {
@@ -165,8 +180,7 @@ function addPlanImage({ folder, planId, name, base64 }) {
     safeName = `${stem}-${Date.now().toString(36)}${ext}`;
     target = path.join(imageDir, safeName);
   }
-  const raw = base64.replace(/^data:[^;]+;base64,/, '');
-  fs.writeFileSync(target, Buffer.from(raw, 'base64'));
+  writeFileAtomic(target, image);
   if (!meta.images.includes(safeName)) {
     meta.images.push(safeName);
     writeJson(path.join(pdir, 'meta.json'), meta);
@@ -222,7 +236,7 @@ function savePlanResult({ folder, planId, markdown }) {
   const pdir = planDir(folder, planId);
   const meta = readMeta(pdir);
   if (!meta) throw new Error('保存方案失败：方案不存在');
-  fs.writeFileSync(path.join(pdir, 'plan.md'), markdown || '', 'utf8');
+  writeFileAtomic(path.join(pdir, 'plan.md'), markdown || '', 'utf8');
   meta.hasPlan = true;
   writeJson(path.join(pdir, 'meta.json'), meta);
 }
@@ -230,9 +244,12 @@ function savePlanResult({ folder, planId, markdown }) {
 function deletePlan(folder, planId) {
   assertFolder(folder);
   const dir = folderDir(folder);
-  const safeId = path.basename(String(planId || ''));
-  fs.rmSync(path.join(dir, safeId), { recursive: true, force: true });
-  if (loadActiveId(folder) === safeId) {
+  const target = planDir(folder, planId);
+  if (!readMeta(target)) throw new Error('删除方案失败：方案不存在');
+  const realDir = fs.realpathSync(dir);
+  if (fs.lstatSync(target).isSymbolicLink() || path.dirname(fs.realpathSync(target)) !== realDir) throw new Error('删除方案失败：方案目录越界');
+  fs.rmSync(target, { recursive: true });
+  if (loadActiveId(folder) === planId) {
     try {
       fs.unlinkSync(path.join(dir, 'active.json'));
     } catch {}
@@ -242,15 +259,15 @@ function deletePlan(folder, planId) {
 function setActivePlan(folder, planIdOrNull) {
   assertFolder(folder);
   const dir = folderDir(folder);
-  if (planIdOrNull == null || planIdOrNull === '') {
+  if (planIdOrNull === null) {
     try {
       fs.unlinkSync(path.join(dir, 'active.json'));
     } catch {}
     return;
   }
-  const safeId = path.basename(String(planIdOrNull));
-  if (!readMeta(path.join(dir, safeId))) throw new Error('设置启用方案失败：方案不存在');
-  writeJson(path.join(dir, 'active.json'), { planId: safeId });
+  const target = planDir(folder, planIdOrNull);
+  if (!readMeta(target)) throw new Error('设置启用方案失败：方案不存在');
+  writeJson(path.join(dir, 'active.json'), { planId: planIdOrNull });
 }
 
 function getActivePlan(folder) {

@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const Module = require('module');
+const crypto = require('crypto');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reviewflow-planstore-'));
 
@@ -23,6 +24,7 @@ after(() => {
 });
 
 const FOLDER = '/repo/demo';
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==';
 
 test('createPlan 创建方案并可列出', () => {
   const meta = planStore.createPlan({
@@ -66,14 +68,14 @@ test('addPlanImage / getPlanDetail / removePlanImage', () => {
     folder: FOLDER,
     planId: meta.id,
     name: 'shot.png',
-    base64: 'data:image/png;base64,aGVsbG8=',
+    base64: `data:image/png;base64,${PNG}`,
   });
   assert.strictEqual(name, 'shot.png');
 
   const detail = planStore.getPlanDetail(FOLDER, meta.id);
   assert.strictEqual(detail.images.length, 1);
   assert.strictEqual(detail.images[0].name, 'shot.png');
-  assert.strictEqual(detail.images[0].dataUrl, 'data:image/png;base64,aGVsbG8=');
+  assert.strictEqual(detail.images[0].dataUrl, `data:image/png;base64,${PNG}`);
   assert.strictEqual(detail.prdText, 'x');
 
   planStore.removePlanImage({ folder: FOLDER, planId: meta.id, name: 'shot.png' });
@@ -85,7 +87,7 @@ test('addPlanImage / getPlanDetail / removePlanImage', () => {
 
 test('addPlanImage 方案不存在或图片为空时报错', () => {
   assert.throws(
-    () => planStore.addPlanImage({ folder: FOLDER, planId: 'nope', name: 'a.png', base64: 'eA==' }),
+    () => planStore.addPlanImage({ folder: FOLDER, planId: 'missing123', name: 'a.png', base64: 'eA==' }),
     /方案不存在/,
   );
   const meta = planStore.createPlan({ folder: FOLDER, title: 't', prdText: '' });
@@ -99,13 +101,13 @@ test('addPlanImage 方案不存在或图片为空时报错', () => {
 test('图片文件名路径穿越清洗', () => {
   const meta = planStore.createPlan({ folder: FOLDER, title: 't', prdText: '' });
 
-  const r1 = planStore.addPlanImage({ folder: FOLDER, planId: meta.id, name: '../../evil.png', base64: 'eA==' });
+  const r1 = planStore.addPlanImage({ folder: FOLDER, planId: meta.id, name: '../../evil.png', base64: PNG });
   assert.strictEqual(r1.name, 'evil.png');
 
-  const r2 = planStore.addPlanImage({ folder: FOLDER, planId: meta.id, name: '', base64: 'eA==' });
+  const r2 = planStore.addPlanImage({ folder: FOLDER, planId: meta.id, name: '', base64: PNG });
   assert.strictEqual(r2.name, 'image.png');
 
-  const r3 = planStore.addPlanImage({ folder: FOLDER, planId: meta.id, name: '..', base64: 'eA==' });
+  const r3 = planStore.addPlanImage({ folder: FOLDER, planId: meta.id, name: '..', base64: PNG });
   assert.strictEqual(r3.name, 'image.png');
 
   // 文件必须落在方案 images 目录内，不能写到 plans 根目录或更外层
@@ -120,13 +122,37 @@ test('图片文件名路径穿越清洗', () => {
   planStore.deletePlan(FOLDER, meta.id);
 });
 
-test('planId 路径穿越清洗：不会访问其他目录', () => {
+test('所有 planId 入口拒绝遍历和非法标识，不影响原方案', () => {
   const meta = planStore.createPlan({ folder: FOLDER, title: 't', prdText: '' });
-  // basename 清洗后落到不存在的目录，应返回 null 而不是抛错或越界
-  assert.strictEqual(planStore.getPlanDetail(FOLDER, '../..'), null);
-  // '../<id>' 被 basename 清洗为同目录下的合法 id，不会越出 folderDir
-  assert.strictEqual(planStore.getPlanDetail(FOLDER, `../${meta.id}`).id, meta.id);
+  for (const planId of ['..', '', '.', 'a/b', `../${meta.id}`, '-invalid', 'A'.repeat(6), 'a'.repeat(41)]) {
+    for (const call of [
+      () => planStore.getPlanDetail(FOLDER, planId), () => planStore.deletePlan(FOLDER, planId),
+      () => planStore.setActivePlan(FOLDER, planId),
+      () => planStore.addPlanImage({ folder: FOLDER, planId, name: 'a.png', base64: PNG }),
+      () => planStore.removePlanImage({ folder: FOLDER, planId, name: 'a.png' }),
+      () => planStore.savePlanResult({ folder: FOLDER, planId, markdown: 'x' }),
+    ]) assert.throws(call, /方案 ID 无效/);
+  }
+  assert.strictEqual(planStore.getPlanDetail(FOLDER, meta.id).id, meta.id);
+  assert.throws(() => planStore.deletePlan(FOLDER, 'missing123'), /方案不存在/);
   planStore.deletePlan(FOLDER, meta.id);
+});
+
+test('PRD 和设计稿大小及实际类型在写入前校验', () => {
+  assert.throws(() => planStore.createPlan({ folder: FOLDER, prdText: '字'.repeat(700000) }), /2 MiB/);
+  const meta = planStore.createPlan({ folder: '/repo/size', prdText: '' });
+  const add = (name, base64) => planStore.addPlanImage({ folder: '/repo/size', planId: meta.id, name, base64 });
+  assert.throws(() => add('fake.png', 'aGVsbG8='), /类型无效/);
+  assert.throws(() => add('fake.jpg', PNG), /类型无效/);
+  assert.throws(() => add('fake.png', 'data:image/jpeg;base64,' + PNG), /类型无效/);
+  assert.throws(() => add('fake.png', '!invalid'), /base64/);
+  const image = Buffer.alloc(10 * 1024 * 1024);
+  Buffer.from(PNG, 'base64').copy(image);
+  assert.throws(() => add('large.png', Buffer.concat([image, Buffer.from('x')]).toString('base64')), /10 MiB/);
+  const base64 = image.toString('base64');
+  for (let i = 0; i < 4; i++) add(`${i}.png`, base64);
+  assert.throws(() => add('extra.png', PNG), /40 MiB/);
+  add('0.png', PNG);
 });
 
 test('setActivePlan / getActivePlan / getPlanDetail.active', () => {
@@ -147,7 +173,7 @@ test('setActivePlan / getActivePlan / getPlanDetail.active', () => {
   planStore.setActivePlan(FOLDER, null);
   assert.strictEqual(planStore.getActivePlan(FOLDER), null);
 
-  assert.throws(() => planStore.setActivePlan(FOLDER, 'not-exist'), /方案不存在/);
+  assert.throws(() => planStore.setActivePlan(FOLDER, 'missing123'), /方案不存在/);
 
   planStore.deletePlan(FOLDER, a.id);
   planStore.deletePlan(FOLDER, b.id);
@@ -168,7 +194,7 @@ test('savePlanResult 写入 plan.md 并标记 hasPlan', () => {
   assert.strictEqual(detail.planMarkdown, '# 实施方案');
   assert.strictEqual(planStore.listPlans(FOLDER).find((p) => p.id === meta.id).hasPlan, true);
   assert.throws(
-    () => planStore.savePlanResult({ folder: FOLDER, planId: 'nope', markdown: 'x' }),
+    () => planStore.savePlanResult({ folder: FOLDER, planId: 'missing123', markdown: 'x' }),
     /方案不存在/,
   );
   planStore.deletePlan(FOLDER, meta.id);
@@ -201,4 +227,27 @@ test('不同 folder 的方案互相隔离', () => {
   assert.strictEqual(planStore.listPlans('/repo/other').length, 1);
   assert.strictEqual(planStore.getPlanDetail('/repo/demo', meta.id), null);
   planStore.deletePlan('/repo/other', meta.id);
+});
+
+test('损坏的 meta 和 active JSON 保留副本，文本结果不受影响', () => {
+  const folder = '/repo/corrupt';
+  const meta = planStore.createPlan({ folder, title: '保留方案', prdText: '原始需求' });
+  planStore.savePlanResult({ folder, planId: meta.id, markdown: '# 原始方案' });
+  planStore.setActivePlan(folder, meta.id);
+  const hash = crypto.createHash('sha1').update(folder).digest('hex').slice(0, 16);
+  const dir = path.join(tmpDir, 'plans', hash);
+  fs.writeFileSync(path.join(dir, 'active.json'), '{broken active');
+  assert.strictEqual(planStore.getActivePlan(folder), null);
+  planStore.setActivePlan(folder, meta.id);
+  const activeBackup = fs.readdirSync(dir).find((name) => name.startsWith('active.json.corrupt-'));
+  assert.ok(activeBackup);
+  assert.strictEqual(fs.readFileSync(path.join(dir, activeBackup), 'utf8'), '{broken active');
+  const pdir = path.join(dir, meta.id);
+  fs.writeFileSync(path.join(pdir, 'meta.json'), '{broken meta');
+  assert.strictEqual(planStore.getPlanDetail(folder, meta.id), null);
+  const metaBackup = fs.readdirSync(pdir).find((name) => name.startsWith('meta.json.corrupt-'));
+  assert.ok(metaBackup);
+  assert.strictEqual(fs.readFileSync(path.join(pdir, metaBackup), 'utf8'), '{broken meta');
+  assert.strictEqual(fs.readFileSync(path.join(pdir, 'prd.txt'), 'utf8'), '原始需求');
+  assert.strictEqual(fs.readFileSync(path.join(pdir, 'plan.md'), 'utf8'), '# 原始方案');
 });
