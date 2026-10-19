@@ -1,0 +1,177 @@
+.findings-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.finding-select-checkbox {
+  margin-top: 3px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.finding-run-status-wrap {
+  padding: 4px 0 2px;
+}
+
+.finding-inline-error {
+  align-items: center;
+  gap: 8px;
+}
+
+.finding-handoff-link {
+  padding: 0;
+  font-size: 12px;
+}
+
+.fix-patch-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fix-patch-file-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.fix-patch-file-path {
+  color: var(--text);
+}
+
+.fix-patch-check {
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+}
+
+.fix-patch-check-ok {
+  border-color: var(--success);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.fix-patch-check-err {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.fix-patch-diff-host {
+  display: flex;
+  flex-direction: column;
+}
+
+.fix-patch-diff {
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  padding: 4px 0;
+  user-select: text;
+}
+
+.fix-patch-diff * {
+  user-select: text;
+}
+
+.fix-patch-diff-meta {
+  padding: 2px 12px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre;
+}
+
+.fix-patch-diff .diff-line .line-content {
+  padding-left: 12px;
+}
+
+.fix-dialog-status-host {
+  padding: 4px 0;
+}
+
+.fix-apply-confirm-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fix-apply-confirm-text {
+  color: var(--warning);
+  font-size: 12px;
+}
+
+.fix-apply-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.fix-handoff-prompt {
+  max-height: 240px;
+}
+
+.fix-handoff-warning {
+  font-weight: 500;
+}
+
+.fix-handoff-commands {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fix-handoff-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fix-handoff-cmd-label {
+  width: 140px;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.fix-handoff-cmd-code {
+  flex: 1;
+  min-width: 0;
+}
+
+.run-estimate-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.file-estimate-badge {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
