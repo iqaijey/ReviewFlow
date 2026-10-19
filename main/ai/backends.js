@@ -1,7 +1,7 @@
 const state = require('./state');
 const { timeoutMs, cancelledError, ensureLane } = require('./runControl');
 
-// 解析 OpenAI 兼容的 SSE 流式响应：逐行读取 data: 事件，累加 delta.content，
+// 解析 OpenAI 兼容的 SSE 流式响应：按空行分帧，多行 data 合并后再解析，
 // 每收到一段就把累计全文推给渲染进程；usage 取流末尾带 usage 的 chunk（stream_options.include_usage）
 async function readSseStream(resp, runId) {
   const reader = resp.body.getReader();
@@ -9,6 +9,9 @@ async function readSseStream(resp, runId) {
   let buffer = '';
   let content = '';
   let usage = {};
+  let malformed = 0;
+  let ended = false;
+  const dataLines = [];
   // 节流推送：避免每个 SSE chunk 都把累计全文过一遍 IPC（长输出时是 O(n²) 流量）
   let lastSentAt = 0;
   let lastSentLen = 0;
@@ -20,33 +23,54 @@ async function readSseStream(resp, runId) {
     lastSentLen = content.length;
     state.chunkSender(runId, content);
   };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      if (!line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
-      let chunk;
-      try {
-        chunk = JSON.parse(payload);
-      } catch {
-        continue;
-      }
-      if (chunk && chunk.usage && typeof chunk.usage === 'object') usage = chunk.usage;
-      const delta = chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
-      const piece = delta && typeof delta.content === 'string' ? delta.content : '';
-      if (piece) {
-        content += piece;
-        maybeSend(false);
-      }
+  const dispatch = () => {
+    const payload = dataLines.join('\n');
+    dataLines.length = 0;
+    if (!payload || ended) return;
+    if (payload.trim() === '[DONE]') { ended = true; return; }
+    let chunk;
+    try {
+      chunk = JSON.parse(payload);
+    } catch {
+      malformed += 1;
+      return;
     }
+    if (chunk && chunk.usage && typeof chunk.usage === 'object') usage = chunk.usage;
+    const delta = chunk?.choices?.[0]?.delta;
+    if (typeof delta?.content === 'string') {
+      content += delta.content;
+      maybeSend(false);
+    }
+  };
+  const consume = (eof) => {
+    let match;
+    while ((match = /\r\n|\r|\n/.exec(buffer))) {
+      if (!eof && match[0] === '\r' && match.index === buffer.length - 1) break;
+      const line = buffer.slice(0, match.index);
+      buffer = buffer.slice(match.index + match[0].length);
+      if (!line) dispatch();
+      else if (line === 'data' || line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+    }
+    if (eof) {
+      if (buffer === 'data' || buffer.startsWith('data:')) dataLines.push(buffer.slice(5).replace(/^ /, ''));
+      buffer = '';
+      dispatch();
+    }
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      consume(false);
+    }
+    buffer += decoder.decode();
+    consume(true);
+  } finally {
+    reader.releaseLock();
   }
   if (content) maybeSend(true);
+  if (!content && malformed) throw new Error(`AI 流式响应包含 ${malformed} 个无效 JSON 事件，未收到有效内容`);
   if (!content) throw new Error('AI 返回格式异常，无法解析响应内容');
   return { content, usage };
 }
