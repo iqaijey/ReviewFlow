@@ -1,55 +1,12 @@
+import { formatStats, formatRunEstimate, planReviewEnabled, loadPlanContext, changesTitle, defaultExportName as makeExportName, copyMarkdown, exportReview } from '../lib/aiShared.js';
+import { setStatusBox } from '../lib/statusBox.js';
 // 完整讲解：把当前改动按文件逐块讲透（流式预览 + 运行详情 + 终止）
 import { renderMarkdown, renderMarkdownPage } from '../markdown.js';
 import { createStreamPreview } from '../lib/streamPreview.js';
-import { createLoadingNode } from '../lib/loading.js';
-
-const BACKEND_LABELS = { api: 'API', opencode: 'OpenCode', kimi: 'Kimi CLI', codex: 'Codex' };
-
-const pad = (n) => String(n).padStart(2, '0');
-
-function formatStats(stats) {
-  const parts = [];
-  if (stats && stats.backend) parts.push(BACKEND_LABELS[stats.backend] || stats.backend);
-  if (stats && stats.model) parts.push(stats.model);
-  if (stats && stats.backend) parts.push(stats.effort ? `思考 ${stats.effort}` : '默认强度');
-  if (stats && stats.promptTokens != null && stats.completionTokens != null) {
-    parts.push(`${(stats.promptTokens + stats.completionTokens).toLocaleString()} tokens`);
-  }
-  if (stats && stats.durationMs != null) {
-    parts.push(`${(stats.durationMs / 1000).toFixed(1)}s`);
-  }
-  return parts.join(' · ');
-}
-
-// 注入 prompt 的方案长度上限，避免方案过长撑爆 prompt
-const PLAN_CONTEXT_MAX_CHARS = 6000;
-const PLAN_PRD_EXCERPT_CHARS = 500;
-
-// 拉取当前项目启用的需求方案并构造注入文本；未开启、无方案或接口缺失时返回 null
-async function loadPlanContext(api, folder) {
-  if (!folder || localStorage.getItem('planReviewEnabled') === '0') return null;
-  if (typeof api.getActivePlan !== 'function') return null;
-  /** @type {any} */
-  let plan = null;
-  try {
-    plan = await api.getActivePlan(folder);
-  } catch {
-    return null;
-  }
-  if (!plan || !plan.planMarkdown) return null;
-  let markdown = String(plan.planMarkdown);
-  if (markdown.length > PLAN_CONTEXT_MAX_CHARS) {
-    markdown = `${markdown.slice(0, PLAN_CONTEXT_MAX_CHARS)}\n\n（方案内容过长，已截断至 ${PLAN_CONTEXT_MAX_CHARS} 字）`;
-  }
-  const prdText = String(plan.prdText || '');
-  const prdExcerpt = prdText.length > PLAN_PRD_EXCERPT_CHARS
-    ? `${prdText.slice(0, PLAN_PRD_EXCERPT_CHARS)}…（PRD 过长已截断）`
-    : prdText;
-  const title = plan.title || '未命名方案';
-  let section = `## 需求方案（评审依据）\n\n方案标题：${title}\n\n${markdown}`;
-  if (prdExcerpt) section += `\n\n### PRD 摘要\n\n${prdExcerpt}`;
-  return { title, section };
-}
+import { createRunStatus } from '../lib/runStatus.js';
+import { createHistoryView } from '../lib/historyView.js';
+import { createChatView } from '../lib/chatView.js';
+import { renderCoverageNotices } from '../lib/reviewGuards.js';
 
 export default {
   id: 'fullExplain',
@@ -61,6 +18,10 @@ export default {
     const toolbar = el('div', { class: 'review-toolbar' });
     const hint = el('span', { class: 'stat-item' },
       '把当前全部改动按文件逐块讲透，内容较长、耗时较久');
+    const estimateBadge = el('span', {
+      class: 'run-estimate-badge',
+      style: 'display:none',
+    });
     const startBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '开始完整讲解');
     const historyBtn = el('button', { class: 'btn', type: 'button' }, '历史');
     const runLink = el('button', {
@@ -68,6 +29,7 @@ export default {
       onClick: () => ctx.showRunDetails(),
     }, '运行详情');
     toolbar.appendChild(hint);
+    toolbar.appendChild(estimateBadge);
     toolbar.appendChild(startBtn);
     toolbar.appendChild(historyBtn);
     toolbar.appendChild(runLink);
@@ -78,41 +40,20 @@ export default {
 
     const statusBox = el('div', { class: 'review-status' });
     const mdBox = el('div', { class: 'md review-result' });
+    const coverageBox = el('div');
     container.appendChild(statusBox);
+    container.appendChild(coverageBox);
     container.appendChild(mdBox);
 
     // 与多角度 Review 相同的时间 + 文件数格式
-    const countChanges = (files) => {
-      let add = 0, del = 0;
-      for (const f of files)
-        for (const h of f.hunks)
-          for (const l of h.lines) {
-            if (l.type === 'add') add++;
-            else if (l.type === 'del') del++;
-          }
-      return { add, del };
-    };
+    const autoTitle = () => changesTitle(state.changes ? state.changes.files : []);
 
-    const autoTitle = () => {
-      const d = new Date();
-      const files = state.changes ? state.changes.files : [];
-      const { add, del } = countChanges(files);
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-        `${pad(d.getHours())}:${pad(d.getMinutes())} · ${files.length} 文件 +${add} -${del}`;
-    };
-
-    const defaultExportName = () => {
-      const d = new Date();
-      return `fullexplain-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-        `-${pad(d.getHours())}${pad(d.getMinutes())}.html`;
-    };
+    const defaultExportName = () => makeExportName('fullexplain', 'html');
 
     const copyBtn = (markdown) => {
       const btn = el('button', { class: 'btn', type: 'button' }, '复制');
       btn.addEventListener('click', () => {
-        navigator.clipboard.writeText(markdown)
-          .then(() => { if (toast) toast('已复制到剪贴板'); })
-          .catch(() => { /* 剪贴板不可用时静默 */ });
+        copyMarkdown(markdown, toast);
       });
       return btn;
     };
@@ -122,14 +63,11 @@ export default {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         try {
-          const saved = await api.exportReview({
+          await exportReview(api, toast, errText, () => ({
             defaultName: defaultExportName(),
             content: renderMarkdownPage(`完整讲解 · ${autoTitle()}`, markdown),
             ext: 'html',
-          });
-          if (saved && toast) toast(`已保存到 ${saved}`);
-        } catch (err) {
-          toast('导出失败：' + errText(err), 'error');
+          }));
         } finally {
           btn.disabled = false;
         }
@@ -137,224 +75,380 @@ export default {
       return btn;
     };
 
-    // 每次讲解运行递增，用于丢弃过期追问结果
-    let runSeq = 0;
-
-    // 追问区：基于本次讲解结果继续提问，最多保留最近 10 轮（首条固定为初始结果）
-    const buildFollowUp = (markdown) => {
-      if (typeof api.reviewFollowUp !== 'function') return null;
-      const seqAtBuild = runSeq;
-      let previousQA = [{ question: '（初始结果）', answer: markdown }];
-      const box = el('div', { class: 'explain-follow' });
-      const list = el('div', { class: 'explain-follow-list' });
-      const form = el('div', { class: 'explain-follow-form' });
-      const input = el('input', {
-        class: 'settings-input', type: 'text',
-        placeholder: '就这次讲解继续提问…', spellcheck: 'false',
+    /** @type {ReturnType<typeof createChatView> | null} */
+    let activeChat = null;
+    const disposeChat = () => { activeChat?.dispose(); activeChat = null; };
+    const buildFollowUp = (folder, reviewId) => {
+      disposeChat();
+      if (!reviewId || typeof api.createChatThread !== 'function') return null;
+      const chat = createChatView({
+        el,
+        api,
+        bus,
+        getFolder: () => state.folder,
+        originFolder: folder,
+        ensureThread: () => api.createChatThread({ folder, reviewId }),
+        placeholder: '就这次讲解继续提问（⌘Enter 发送）…',
+        label: '就本次讲解继续追问',
+        toast,
+        errText,
       });
-      const askBtn = el('button', { class: 'btn', type: 'button' }, '提问');
-      form.appendChild(input);
-      form.appendChild(askBtn);
-      box.appendChild(list);
-      box.appendChild(form);
-
-      let asking = false;
-      const submit = async () => {
-        const question = input.value.trim();
-        if (!question || asking || !state.changes) return;
-        asking = true;
-        input.disabled = true;
-        askBtn.disabled = true;
-        const item = el('div', { class: 'explain-follow-item' });
-        item.appendChild(el('div', { class: 'explain-follow-q' }, `> ${question}`));
-        const loading = el('div', { class: 'explain-loading' });
-        loading.appendChild(el('span', { class: 'spinner' }));
-        loading.appendChild(el('span', {}, 'AI 思考中，请稍候…'));
-        item.appendChild(loading);
-        list.appendChild(item);
-        const runId = `run-${Date.now()}`;
-        try {
-          const { markdown: answer, stats } = await api.reviewFollowUp({
-            folder: state.folder,
-            files: state.changes.files,
-            previousQA: [...previousQA],
-            question,
-            runId,
-          });
-          if (seqAtBuild !== runSeq) return; // 已重新讲解，丢弃过期回答
-          loading.remove();
-          const mdNode = el('div', { class: 'md' });
-          mdNode.innerHTML = renderMarkdown(answer);
-          item.appendChild(mdNode);
-          item.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
-          previousQA.push({ question, answer });
-          if (previousQA.length > 10) {
-            previousQA = [previousQA[0], ...previousQA.slice(-9)];
-          }
-          input.value = '';
-        } catch (err) {
-          if (seqAtBuild !== runSeq) return;
-          loading.remove();
-          if (errText(err).includes('已被用户终止')) {
-            item.appendChild(el('div', { class: 'empty-hint' }, '已终止'));
-          } else {
-            item.appendChild(el('div', { class: 'error-text' },
-              `追问失败：${errText(err)}`));
-          }
-        } finally {
-          asking = false;
-          input.disabled = false;
-          askBtn.disabled = false;
-        }
-      };
-      askBtn.addEventListener('click', submit);
-      input.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') submit();
-      });
-      return box;
+      activeChat = chat;
+      return chat.root;
     };
 
-    // ---------- 历史（kind === 'full'） ----------
-    let historyLoaded = false;
-    const loadHistory = async () => {
-      historyPanel.textContent = '';
-      if (!state.folder) {
-        historyPanel.appendChild(emptyState('请先选择项目文件夹', '选择一个项目后，这里会显示历史讲解记录',
-          { label: '选择项目', onClick: () => ctx.selectFolder() }));
-        return;
-      }
-      let reviews = [];
-      try {
-        reviews = await api.listReviews(state.folder);
-      } catch (err) {
-        historyPanel.appendChild(el('div', { class: 'error-text' },
-          `加载历史失败：${errText(err)}`));
-        return;
-      }
-      reviews = (reviews || []).filter((entry) => entry.kind === 'full');
-      if (!reviews.length) {
-        historyPanel.appendChild(emptyState('暂无历史讲解记录',
-          '完成一次完整讲解后会自动保存到这里'));
-        return;
-      }
-      const list = el('div', { class: 'review-history' });
-      for (const entry of reviews) {
-        const item = el('div', { class: 'review-history-item' });
-        const head = el('button', { class: 'review-history-head', type: 'button' });
-        head.appendChild(el('span', { class: 'review-history-time' },
-          new Date(entry.createdAt).toLocaleString()));
-        head.appendChild(el('span', { class: 'review-history-title' }, entry.title));
-        if (entry.stats) {
-          head.appendChild(el('span', { class: 'ai-stats' }, formatStats(entry.stats)));
-        }
-        const body = el('div', { class: 'review-history-body', style: 'display:none' });
-        head.addEventListener('click', () => {
-          const opening = body.style.display === 'none';
-          body.style.display = opening ? '' : 'none';
-          if (opening && !body.firstChild) {
-            const mdNode = el('div', { class: 'md' });
-            mdNode.innerHTML = renderMarkdown(entry.markdown);
-            body.appendChild(mdNode);
-          }
-        });
-        item.appendChild(head);
-        item.appendChild(body);
-        list.appendChild(item);
-      }
-      historyPanel.appendChild(list);
-    };
+    const historyView = createHistoryView({
+      container: historyPanel,
+      el,
+      api,
+      bus,
+      getFolder: () => state.folder,
+      kind: 'full',
+      emptyState,
+      selectFolder: () => ctx.selectFolder(),
+      toast,
+      errText,
+    });
 
     historyBtn.addEventListener('click', () => {
       const opening = historyPanel.style.display === 'none';
       historyPanel.style.display = opening ? '' : 'none';
-      if (opening && !historyLoaded) {
-        historyLoaded = true;
-        loadHistory();
+      if (opening) {
+        historyView.load();
       }
     });
 
-    const setStatus = (node, fill) => {
-      statusBox.textContent = '';
-      statusBox.classList.toggle('status-fill', !!fill);
-      if (node) statusBox.appendChild(node);
+    const setStatus = (node, fill) => setStatusBox(statusBox, node, fill);
+
+    /** @type {{ dispose: () => void, root: HTMLElement } | null} */
+    let activeRunStatus = null;
+    const disposeRunStatus = () => {
+      if (activeRunStatus) {
+        activeRunStatus.dispose();
+        activeRunStatus = null;
+      }
+    };
+    const mountRunStatus = (runId, onCancel) => {
+      disposeRunStatus();
+      activeRunStatus = createRunStatus({
+        el,
+        api,
+        bus,
+        runId,
+        label: 'AI 讲解中，请稍候…',
+        showDetails: () => ctx.showRunDetails(),
+        onCancel,
+        toast,
+        errText,
+      });
+      return activeRunStatus.root;
     };
 
-    const loadingNode = () => createLoadingNode(el, ctx, 'AI 讲解中，请稍候…');
-
     let running = false;
+    /** @type {{ runId: string, folder: string, title: string } | null} */
+    let pendingRun = null;
+    let dialogResuming = false;
+    let projectEpoch = 0;
+    let cleanupStream = () => {};
+    bus.addEventListener('project:changed', () => {
+      projectEpoch++;
+      cleanupStream();
+      disposeChat();
+      pendingRun = null;
+      mdBox.textContent = '';
+      coverageBox.textContent = '';
+      historyPanel.textContent = '';
+      setStatus(null);
+      finishAttempt();
+      startBtn.disabled = true;
+      estimateSeq++;
+      if (estimateTimer) clearTimeout(estimateTimer);
+      estimateBadge.style.display = 'none';
+    });
 
     const refresh = () => {
+      if (pendingRun) return;
       if (!state.changes || !state.changes.files.length) {
         startBtn.disabled = true;
+        estimateBadge.style.display = 'none';
         if (!mdBox.firstChild) {
           setStatus(emptyState('暂无可讲解的改动',
             '点击左下角「选择项目」选择项目文件夹，并确保存在改动'), true);
         }
         return;
       }
-      startBtn.disabled = running;
+      startBtn.disabled = running || !!pendingRun;
       if (!running && !mdBox.firstChild) {
         setStatus(emptyState('准备就绪', '点击「开始完整讲解」逐块讲透当前改动'), true);
       }
     };
 
-    const run = async () => {
-      if (running || !state.changes || !state.changes.files.length) return;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    let estimateTimer = null;
+    let estimateSeq = 0;
+
+    const runEstimateRefresh = async () => {
+      const seq = ++estimateSeq;
+      const folder = state.folder;
+      const changes = state.changes;
+      if (!folder || !changes || !Array.isArray(changes.files) || !changes.files.length || typeof api.estimateRun !== 'function') {
+        estimateBadge.style.display = 'none';
+        return;
+      }
+      try {
+        const est = await api.estimateRun({
+          folder,
+          kind: 'full',
+          snapshotId: changes.snapshotId || undefined,
+          planEnabled: planReviewEnabled(),
+        });
+        if (seq !== estimateSeq || state.folder !== folder) return;
+        const formatted = formatRunEstimate(est);
+        estimateBadge.textContent = formatted.text;
+        estimateBadge.title = formatted.tooltip;
+        estimateBadge.style.display = '';
+      } catch {
+        if (seq !== estimateSeq || state.folder !== folder) return;
+        estimateBadge.textContent = '无法估算';
+        estimateBadge.title = '';
+        estimateBadge.style.display = '';
+      }
+    };
+
+    const scheduleEstimateRefresh = () => {
+      if (estimateTimer) clearTimeout(estimateTimer);
+      if (!state.folder || !state.changes || !state.changes.files.length) {
+        estimateBadge.style.display = 'none';
+        return;
+      }
+      estimateTimer = setTimeout(() => {
+        estimateTimer = null;
+        runEstimateRefresh();
+      }, 400);
+    };
+
+    bus.addEventListener('settings:saved', () => {
+      scheduleEstimateRefresh();
+    });
+
+    bus.addEventListener('plan:changed', () => {
+      scheduleEstimateRefresh();
+    });
+
+    const finishAttempt = () => {
+      disposeRunStatus();
+      dialogResuming = false;
+      activeCancel = null;
+      running = false;
+      startBtn.textContent = '开始完整讲解';
+      startBtn.classList.remove('btn-danger');
+      startBtn.disabled = !!pendingRun || !state.changes?.files.length;
+    };
+
+    const handleRunError = (err) => {
+      if (errText(err).includes('已被用户终止')) {
+        pendingRun = null;
+        mdBox.textContent = '';
+        setStatus(el('div', { class: 'empty-hint' }, '已终止，可点击「开始完整讲解」重新开始'));
+      } else {
+        const box = el('div', { class: 'review-error' });
+        box.appendChild(el('div', { class: 'error-text' }, `讲解失败：${errText(err)}`));
+        const retry = el('button', { class: 'btn', type: 'button' }, pendingRun ? '从失败处重试' : '重试');
+        retry.addEventListener('click', () => (pendingRun ? resumePending() : run()));
+        box.appendChild(retry);
+        setStatus(box);
+        notify('完整讲解失败', errText(err));
+      }
+    };
+
+    const beginResume = (runId) => {
       running = true;
-      runSeq++;
-      mdBox.textContent = '';
-      setStatus(loadingNode());
-      const runId = `run-${Date.now()}`;
-      const stream = createStreamPreview({ el, api, runId, parent: mdBox });
       activeCancel = () => {
-        if (typeof api.cancelRun === 'function') api.cancelRun(runId).catch(() => {});
+        api.cancelRun(runId).catch((err) => toast('终止失败：' + errText(err), 'error'));
       };
+      setStatus(mountRunStatus(runId, activeCancel));
+      startBtn.disabled = false;
+      startBtn.textContent = '终止运行';
+      startBtn.classList.add('btn-danger');
+    };
+
+    const resumePending = async () => {
+      if (running || !pendingRun) return;
+      const { runId } = pendingRun;
+      const origin = pendingRun;
+      const epoch = projectEpoch;
+      try {
+        beginResume(runId);
+        const result = await api.resumeRun(runId);
+        await handleResult(result, origin);
+      } catch (err) {
+        if (pendingRun?.runId === runId) handleRunError(err);
+      } finally {
+        if (epoch === projectEpoch) finishAttempt();
+      }
+    };
+
+    const handleResult = async (result, origin = pendingRun) => {
+      if (!origin) return;
+      if (origin.folder !== state.folder || pendingRun !== origin) {
+        if (result && !result.paused && !result.failed) toast(`「${origin.folder.split(/[\\/]/).pop()}」的讲解已完成，已保存到其历史`);
+        return;
+      }
+      if (!result || typeof result !== 'object') {
+        pendingRun = null;
+        mdBox.textContent = '';
+        setStatus(el('div', { class: 'empty-hint' },
+          '该运行的检查点已不存在（可能已在别处继续或已结束），请重新开始分析'));
+        return;
+      }
+      const { markdown, stats, paused, failed } = result;
+      setStatus(null);
+      disposeChat();
+      mdBox.innerHTML = renderMarkdown(markdown);
+      if (failed || paused) {
+        const box = el('div', { class: 'review-error' });
+        if (failed) {
+          const stage = failed.stage === 'synthesis' ? '综合阶段失败'
+            : `第 ${failed.batchIndex}/${failed.batchTotal} 批失败`;
+          box.appendChild(el('div', { class: 'error-text' }, `${stage}：${failed.message}`));
+          box.appendChild(el('div', { class: 'empty-hint' }, '已完成的批次已保留，可从失败处继续。'));
+          const retry = el('button', { class: 'btn', type: 'button' }, '从失败处重试');
+          retry.addEventListener('click', resumePending);
+          box.appendChild(retry);
+        } else {
+          box.appendChild(el('div', { class: 'empty-hint' }, '已暂停，可在「运行详情」中继续'));
+          box.appendChild(el('div', { class: 'empty-hint' }, '暂停的进度只保存在本次运行中，退出应用后将无法继续'));
+          const resume = el('button', { class: 'btn', type: 'button' }, '继续');
+          resume.addEventListener('click', resumePending);
+          box.appendChild(resume);
+        }
+        const abandon = el('button', { class: 'btn', type: 'button' }, '放弃');
+        abandon.addEventListener('click', async () => {
+          abandon.disabled = true;
+          try {
+            await api.cancelRun(origin.runId);
+            if (pendingRun !== origin) return;
+            pendingRun = null;
+            mdBox.textContent = '';
+            setStatus(null);
+            finishAttempt();
+            refresh();
+          } catch (err) {
+            toast('放弃失败：' + errText(err), 'error');
+            abandon.disabled = false;
+          }
+        });
+        box.appendChild(abandon);
+        setStatus(box);
+        return;
+      }
+      pendingRun = null;
+      renderCoverageNotices(el, coverageBox, result.coverageNotices || result.historyEntry?.coverageNotices);
+      const reviewId = result.reviewId || (result.historyEntry && result.historyEntry.id) || '';
+      mdBox.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
+      const btnGroup = el('div', { class: 'export-group' });
+      btnGroup.appendChild(copyBtn(markdown));
+      btnGroup.appendChild(exportHtmlBtn(markdown));
+      mdBox.appendChild(btnGroup);
+      const followUp = buildFollowUp(origin.folder, reviewId);
+      if (followUp) mdBox.appendChild(followUp);
+      if (Array.isArray(result.persistenceWarnings)) {
+        for (const warning of result.persistenceWarnings) {
+          toast(warning, 'error');
+        }
+      }
+      if (result.historyEntry) {
+        historyView.upsertEntry(result.historyEntry, origin.folder);
+      } else if (historyPanel.style.display !== 'none') {
+        historyView.load();
+      }
+      notify('完整讲解完成', '当前改动已讲解完毕');
+    };
+
+    bus.addEventListener('runs:changed', (event) => {
+      // 恢复结果可能晚于跑道清理通知，必须等对应 promise/事件。
+      if (!pendingRun || running || dialogResuming) return;
+      const { runId } = pendingRun;
+      if (event.detail.some((run) => run.runId === runId)) return;
+      pendingRun = null;
+      mdBox.textContent = '';
+      setStatus(el('div', { class: 'empty-hint' }, '已终止，可点击「开始完整讲解」重新开始'));
+      finishAttempt();
+    });
+
+    bus.addEventListener('run:resuming', (event) => {
+      const { runId } = event.detail;
+      if (pendingRun?.runId !== runId || running) return;
+      dialogResuming = true;
+      beginResume(runId);
+    });
+    bus.addEventListener('run:resumed', async (event) => {
+      const { runId, result } = event.detail;
+      if (pendingRun?.runId !== runId || !dialogResuming) return;
+      const epoch = projectEpoch;
+      try {
+        await handleResult(result);
+      } catch (err) {
+        if (epoch === projectEpoch) handleRunError(err);
+      } finally {
+        if (epoch === projectEpoch) finishAttempt();
+      }
+    });
+    bus.addEventListener('run:resumeFailed', (event) => {
+      if (pendingRun?.runId !== event.detail.runId || !dialogResuming) return;
+      handleRunError(event.detail.error);
+      finishAttempt();
+    });
+
+    const run = async () => {
+      if (running || pendingRun || !state.changes || !state.changes.files.length) return;
+      running = true;
+      const epoch = projectEpoch;
+      const folder = state.folder;
+      const changes = state.changes;
+      disposeChat();
+      mdBox.textContent = '';
+      coverageBox.textContent = '';
+      const runId = `run-${Date.now()}`;
+      const runTitle = `完整讲解 · ${autoTitle()}`;
+      const origin = { runId, folder, title: runTitle };
+      pendingRun = origin;
+      const stream = createStreamPreview({ el, api, runId, parent: mdBox });
+      cleanupStream = () => { stream.unsubscribe?.(); stream.streamBox.remove(); };
+      activeCancel = () => {
+        if (typeof api.cancelRun === 'function') api.cancelRun(runId).catch((err) => toast('终止失败：' + errText(err), 'error'));
+      };
+      setStatus(mountRunStatus(runId, activeCancel));
       startBtn.textContent = '终止运行';
       startBtn.classList.add('btn-danger');
       try {
+        /** @type {ReviewRunPayload} */
         const payload = {
-          folder: state.folder,
-          files: state.changes.files,
+          folder,
+          files: changes.files,
           runId,
+          title: runTitle,
+          kind: 'full',
+          planEnabled: planReviewEnabled(),
         };
-        const plan = await loadPlanContext(api, state.folder);
-        if (plan) payload.planContext = plan.section;
-        const { markdown, stats } = await api.explainFull(payload);
-        setStatus(null);
-        mdBox.innerHTML = renderMarkdown(markdown);
-        mdBox.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
-        const btnGroup = el('div', { class: 'export-group' });
-        btnGroup.appendChild(copyBtn(markdown));
-        btnGroup.appendChild(exportHtmlBtn(markdown));
-        mdBox.appendChild(btnGroup);
-        const followUp = buildFollowUp(markdown);
-        if (followUp) mdBox.appendChild(followUp);
-        notify('完整讲解完成', '当前改动已讲解完毕');
-        // 历史保存失败不影响结果展示
-        try {
-          await api.saveReview({
-            folder: state.folder,
-            title: `完整讲解 · ${autoTitle()}`,
-            kind: 'full',
-            stats,
-            markdown,
-          });
-          historyLoaded = false; // 下次打开历史时重新加载
-        } catch { /* 忽略 */ }
-      } catch (err) {
-        if (errText(err).includes('已被用户终止')) {
-          setStatus(el('div', { class: 'empty-hint' }, '已终止，可点击「开始完整讲解」重新开始'));
-        } else {
-          setStatus(el('div', { class: 'error-text' }, `讲解失败：${errText(err)}`));
-          notify('完整讲解失败', errText(err));
+        if (changes.snapshotId) {
+          payload.snapshotId = changes.snapshotId;
         }
+        const plan = await loadPlanContext(api, folder);
+        if (plan) {
+          if (plan.id) payload.planId = plan.id;
+          payload.planTitle = plan.title;
+          payload.planContext = plan.section;
+        }
+        await handleResult(await api.explainFull(payload), origin);
+      } catch (err) {
+        if (epoch !== projectEpoch) return;
+        pendingRun = null;
+        handleRunError(err);
       } finally {
         if (stream.unsubscribe) stream.unsubscribe();
         stream.streamBox.remove();
-        activeCancel = null;
-        startBtn.textContent = '开始完整讲解';
-        startBtn.classList.remove('btn-danger');
-        running = false;
+        if (epoch === projectEpoch) finishAttempt();
       }
     };
 
@@ -370,19 +464,18 @@ export default {
 
     bus.addEventListener('changes:loaded', () => {
       refresh();
+      scheduleEstimateRefresh();
       // 保留已有讲解结果，只提示可能过期
-      if (mdBox.firstChild) {
+      if (mdBox.firstChild && !pendingRun) {
         setStatus(el('div', { class: 'empty-hint' },
           '改动已更新，以下讲解可能已过期，可点击「开始完整讲解」重新生成'));
       }
-      // 文件夹可能已切换，历史列表下次打开时重新加载
-      historyLoaded = false;
       if (historyPanel.style.display !== 'none') {
-        historyLoaded = true;
-        loadHistory();
+        historyView.load();
       }
     });
 
     refresh();
+    scheduleEstimateRefresh();
   },
 };
