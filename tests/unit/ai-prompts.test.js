@@ -237,3 +237,34 @@ test('buildExplainContext 多段框选', () => {
   assert.ok(context.includes('文件: b.js'));
   assert.ok(context.includes('>+5 x'));
 });
+
+test('噪声等级覆盖优先级与无效覆盖拒绝', () => {
+  assert.strictEqual(prompts.effectiveNoiseLevel('quiet', 'detailed'), 'quiet');
+  assert.strictEqual(prompts.effectiveNoiseLevel(undefined, 'detailed'), 'detailed');
+  assert.strictEqual(prompts.effectiveNoiseLevel(undefined, 'invalid'), 'balanced');
+  assert.throws(() => prompts.effectiveNoiseLevel('invalid', 'quiet'), /噪声/);
+  assert.notStrictEqual(prompts.noiseInstructions('quiet'), prompts.noiseInstructions('detailed'));
+});
+
+test('复核 cap 50，未核对优先，随后最早核对，严重性与创建时间破同序', () => {
+  const { normalizeFinding } = require('../../main/findings');
+  const items = Array.from({ length: 60 }, (_, i) => normalizeFinding({ id: `i${i}`, text: `问题${i}`, createdAt: i, lastVerifiedAt: i + 1 }));
+  items[59].lastVerifiedAt = null;
+  items[58].lastVerifiedAt = null;
+  items[58].severity = '高';
+  const selected = prompts.selectPendingFindings(items);
+  assert.strictEqual(selected.length, 50);
+  assert.deepStrictEqual(selected.slice(0, 3).map((f) => f.id), ['i58', 'i59', 'i0']);
+  selected.forEach((f, i) => { f.lastVerifiedAt = 100 + i; });
+  assert.strictEqual(prompts.selectPendingFindings(items)[0].id, 'i48');
+  items[48].status = 'wontfix';
+  assert.strictEqual(prompts.selectPendingFindings(items)[0].id, 'i49');
+});
+
+test('规范格式可由主进程解析，注入包含 ID 而非 renderer 序号', () => {
+  const { parseIssueList, normalizeFinding } = require('../../main/findings');
+  const line = prompts.ISSUE_LIST_SECTION.match(/`(- \[ \].+?)`/)[1];
+  assert.strictEqual(parseIssueList(`## 问题清单\n${line}`).findings[0].location.path, 'src/账户.js');
+  const item = normalizeFinding({ id: 'known-id', text: '问题', status: 'partial' });
+  assert.ok(prompts.pendingFindingsText([item]).includes('[id=known-id]'));
+});

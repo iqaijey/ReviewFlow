@@ -1,5 +1,36 @@
 const fileCache = require('../fileContentCache');
 
+const ISSUE_LIST_SECTION = '最后必须追加一节 ## 问题清单。每个可执行问题严格使用一行：' +
+  '`- [ ] [高][正确性] @"src/账户.js":new:42-47 | 空账户列表仍访问首项，会导致崩溃`。' +
+  '严重性只能是高/中/低；类别只能是安全/正确性/性能/可维护性/需求符合度/其他。' +
+  '路径必须 JSON 双引号编码，删除侧用 old，新增侧用 new，行号为正整数闭区间或单行 :42；未知行用 :?，未知位置用 @?。描述必须为单行；没有问题写「无」。' +
+  '严重性标准：高=安全漏洞、数据丢失、崩溃或核心功能失败；中=具体错误行为或显著性能问题；低=局部、可执行的低影响问题。';
+const LEGACY_CHECK_SECTION = '追加一节 ## 遗留问题核对，对提供的 ID 逐条输出：' +
+  '`- [id=原始ID] => 已修复/仍存在/部分修复/已过时 | 说明`（四个结论选一个）。' +
+  '保留原 ID；未出现在当前 diff 不是修复证据，证据不足不得判为已修复或已过时。' +
+  '综合和分层合并必须保留规范问题行、所有 finding ID 和已修复、仍存在、部分修复、已过时四种结论；有矛盾保留双方证据，不擅自关闭。';
+const NOISE_INSTRUCTIONS = {
+  quiet: '安静：仅报告有具体证据的高/中问题；排除推测性风险、风格偏好和低影响改进。',
+  balanced: '均衡：报告具体可执行的高/中/低问题；排除纯风格偏好或无证据的假设。',
+  detailed: '详尽：包含可执行的低影响可维护性/性能问题和明确标注条件的风险；仍须有证据，不得编造。',
+};
+function effectiveNoiseLevel(override, fallback) {
+  if (override !== undefined && !Object.hasOwn(NOISE_INSTRUCTIONS, override)) throw new Error('无效的噪声等级');
+  return override || (Object.hasOwn(NOISE_INSTRUCTIONS, fallback) ? fallback : 'balanced');
+}
+function noiseInstructions(level) { return `\n评审噪声等级 ${level}：${NOISE_INSTRUCTIONS[level] || NOISE_INSTRUCTIONS.balanced}\n噪声等级不减少遗留问题复核范围。`; }
+/** @param {import('../findingModel').Finding[]} findings */
+function selectPendingFindings(findings) {
+  const severity = { 高: 0, 中: 1, 低: 2 };
+  return findings.filter((f) => f.status === 'pending' || f.status === 'partial').sort((a, b) =>
+    (a.lastVerifiedAt == null && b.lastVerifiedAt == null ? 0 : a.lastVerifiedAt == null ? -1 : b.lastVerifiedAt == null ? 1 : a.lastVerifiedAt - b.lastVerifiedAt)
+      || (severity[a.severity || ''] ?? 3) - (severity[b.severity || ''] ?? 3) || a.createdAt - b.createdAt || a.id.localeCompare(b.id)).slice(0, 50);
+}
+function pendingFindingsText(findings) {
+  return findings.length ? `上次评审遗留的待处理问题（逐个 ID 复核，不以当前 diff 缺席作为修复证据）：\n${findings.map((f) =>
+    `[id=${f.id}] [${f.severity || '未标注'}][${f.category}] ${f.location ? `@${JSON.stringify(f.location.path)}:${f.location.side}:${f.location.startLine ?? '?'}` : '@?'} [${f.status}] | ${f.text.replace(/[\r\n]/g, ' ')}`).join('\n')}` : '';
+}
+
 const STATUS_LABELS = {
   modified: '修改',
   added: '新增',
@@ -119,32 +150,62 @@ const PLAN_SYSTEM =
 function splitIntoBatches(folder, files) {
   const BATCH_LIMIT = 40000;
   const batches = [];
+  const batchPaths = [];
+  const aiTruncatedPaths = [];
   let current = [];
+  let currentPaths = [];
   let currentLen = 0;
   let reviewed = 0;
   for (const file of files) {
+    if (file.resource || file.excluded) continue;
     const text = fileToPromptText(folder, file);
     if (text.length > BATCH_LIMIT) {
+      aiTruncatedPaths.push(file.path);
       if (current.length) {
         batches.push(current);
+        batchPaths.push(currentPaths);
         current = [];
+        currentPaths = [];
         currentLen = 0;
       }
       batches.push([`${text.slice(0, BATCH_LIMIT)}\n(diff 过长已截断)`]);
+      batchPaths.push([file.path]);
       reviewed += 1;
       continue;
     }
     if (current.length && currentLen + text.length > BATCH_LIMIT) {
       batches.push(current);
+      batchPaths.push(currentPaths);
       current = [];
+      currentPaths = [];
       currentLen = 0;
     }
     current.push(text);
+    currentPaths.push(file.path);
     currentLen += text.length;
     reviewed += 1;
   }
-  if (current.length) batches.push(current);
-  return { batches, reviewed };
+  if (current.length) { batches.push(current); batchPaths.push(currentPaths); }
+  return { batches, reviewed, batchPaths, aiTruncatedPaths };
+}
+
+// 合成输入按预算分组，超长单份拆开而非丢弃尾部；分隔符也计入预算。
+function groupSynthesisResults(results, budget) {
+  if (!Number.isSafeInteger(budget) || budget < 2) throw new Error('合成预算必须为至少 2 的整数');
+  const groups = [];
+  let current = '';
+  for (const result of results) {
+    for (let start = 0; start < result.length; start += budget) {
+      const part = result.slice(start, start + budget);
+      if (current && current.length + 2 + part.length > budget) {
+        groups.push(current);
+        current = '';
+      }
+      current = current ? `${current}\n\n${part}` : part;
+    }
+  }
+  if (current) groups.push(current);
+  return groups;
 }
 
 // 构造逐句解析的改动上下文：多段框选（含各段文件路径）或单行 hunk 块，
@@ -187,6 +248,34 @@ function buildExplainContext({ filePath, hunk, line, segments }) {
   };
 }
 
+/** @param {{filePath?:string,hunk?:import('../chatStore').DiffHunk,line?:import('../chatStore').DiffHunk['lines'][number],segments?:Array<{filePath?:string,hunk:import('../chatStore').DiffHunk,lines:import('../chatStore').DiffHunk['lines']}>}} payload @returns {import('../chatStore').Selection[]} */
+function captureExplainSelection({ filePath = '', hunk, line, segments }) {
+  const inputs = segments?.length ? segments : hunk && line ? [{ filePath, hunk, lines: [line] }] : [];
+  if (!inputs.length) throw new Error('缺少要解释的改动行');
+  return inputs.map((seg) => {
+    const selectedLineIndexes = seg.lines.map((selected) => {
+      const index = seg.hunk.lines.indexOf(selected);
+      if (index >= 0) return index;
+      const matches = seg.hunk.lines.map((candidate, i) => ({ candidate, i })).filter(({ candidate }) =>
+        candidate.type === selected.type && candidate.oldLine === selected.oldLine && candidate.newLine === selected.newLine && candidate.content === selected.content);
+      if (matches.length !== 1) throw new Error('选择行无法唯一定位，请重新选择');
+      return matches[0].i;
+    });
+    if (!selectedLineIndexes.length) throw new Error('未选择改动行');
+    return { path: seg.filePath || filePath, hunk: structuredClone(seg.hunk), selectedLineIndexes: [...new Set(selectedLineIndexes)] };
+  });
+}
+
+/** @param {import('../chatStore').Selection[]} selection */
+function buildIndexedExplainContext(selection) {
+  if (!Array.isArray(selection) || !selection.length) throw new Error('缺少捕获的选择');
+  const segments = selection.map((seg) => ({ filePath: seg.path, hunk: seg.hunk, lines: seg.selectedLineIndexes.map((index) => {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= seg.hunk.lines.length) throw new Error('捕获的选择行索引无效');
+    return seg.hunk.lines[index];
+  }) }));
+  return buildExplainContext({ filePath: selection[0].path, hunk: null, line: null, segments });
+}
+
 function withCustomPrompt(system, cfg) {
   const extra = cfg && typeof cfg.customPrompt === 'string' ? cfg.customPrompt.trim() : '';
   return extra ? `${system}\n额外评审要求（必须遵守）：${extra}` : system;
@@ -199,6 +288,7 @@ function applyPromptOverride(cfg, customPromptOverride) {
 }
 
 module.exports = {
+  ISSUE_LIST_SECTION, LEGACY_CHECK_SECTION, effectiveNoiseLevel, noiseInstructions, selectPendingFindings, pendingFindingsText,
   buildContext,
   fileToPromptText,
   overviewSectionsText,
@@ -206,7 +296,9 @@ module.exports = {
   FULL_EXPLAIN_SYSTEM,
   PLAN_SYSTEM,
   splitIntoBatches,
+  groupSynthesisResults,
   buildExplainContext,
+  captureExplainSelection, buildIndexedExplainContext,
   withCustomPrompt,
   applyPromptOverride,
 };
