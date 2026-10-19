@@ -9,6 +9,17 @@ async function readSseStream(resp, runId) {
   let buffer = '';
   let content = '';
   let usage = {};
+  // 节流推送：避免每个 SSE chunk 都把累计全文过一遍 IPC（长输出时是 O(n²) 流量）
+  let lastSentAt = 0;
+  let lastSentLen = 0;
+  const maybeSend = (force) => {
+    if (!state.chunkSender || !runId) return;
+    const now = Date.now();
+    if (!force && now - lastSentAt < 100 && content.length - lastSentLen < 2048) return;
+    lastSentAt = now;
+    lastSentLen = content.length;
+    state.chunkSender(runId, content);
+  };
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -31,10 +42,11 @@ async function readSseStream(resp, runId) {
       const piece = delta && typeof delta.content === 'string' ? delta.content : '';
       if (piece) {
         content += piece;
-        if (state.chunkSender && runId) state.chunkSender(runId, content);
+        maybeSend(false);
       }
     }
   }
+  if (content) maybeSend(true);
   if (!content) throw new Error('AI 返回格式异常，无法解析响应内容');
   return { content, usage };
 }

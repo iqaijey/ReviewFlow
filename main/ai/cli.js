@@ -1,4 +1,5 @@
 const { execFile } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -94,14 +95,15 @@ function chatViaCli(backend, cfg, messages, folder, runId) {
   const text = messages
     .map((m) => (m.role === 'system' ? `【系统指令】\n${m.content}` : m.content))
     .join('\n\n');
+  // 随机后缀防并发碰撞；文件含完整 diff（用户私有代码），写为仅本人可读写
   const tmpFile = path.join(
     os.tmpdir(),
-    `auto-review-prompt-${process.pid}-${Date.now()}.txt`,
+    `auto-review-prompt-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.txt`,
   );
   const cmd = buildCliCmd(backend, cfg, folder, tmpFile);
   const cliTimeout = timeoutMs(cfg);
   return new Promise((resolve, reject) => {
-    fs.writeFile(tmpFile, text, 'utf8', (werr) => {
+    fs.writeFile(tmpFile, text, { encoding: 'utf8', mode: 0o600 }, (werr) => {
       if (werr) {
         reject(new Error(`无法写入临时 prompt 文件: ${werr.message}`));
         return;
