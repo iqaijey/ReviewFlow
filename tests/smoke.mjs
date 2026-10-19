@@ -96,14 +96,11 @@ function createTestRepo() {
   fs.writeFileSync(prdPath, '# 演示 PRD\n\n## 需求\n支持用户缓存，提升读取性能。\n');
 }
 
-// 测试方案数据写入共享 userData（开发版/打包版同目录），跑完必须清掉
-const userData = path.join(os.homedir(), 'Library', 'Application Support', 'auto-review');
+// 测试使用隔离的 userData，结束时随临时目录一起清理
+const userData = path.join(tmp, 'userData');
+fs.mkdirSync(userData, { recursive: true });
 const folderHash = crypto.createHash('sha1').update(repo).digest('hex').slice(0, 16);
 const plansHashDir = path.join(userData, 'plans', folderHash);
-
-// 用户真实设置文件：冒烟会临时写入（customPrompt 往返 + 切 mock 后端），启动前快照原始字节，结束恢复
-const settingsFile = path.join(userData, 'settings.json');
-const origSettingsRaw = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile, 'utf8') : null;
 
 // ---------- CDP 客户端 ----------
 class Cdp {
@@ -163,9 +160,7 @@ let cdp = null;
 let child = null;
 let childExited = false;
 let childLog = '';
-let origPlanReviewEnabled = null;
 let origSettings = null;
-let settingsTouched = false;
 let mockServer = null;
 const mockSockets = new Set();
 
@@ -258,15 +253,7 @@ function killApp() {
 }
 
 async function cleanup() {
-  // 还原本机 localStorage 里的方案参照开关（与本应用默认值等价，但保持原样）
   if (cdp) {
-    try {
-      if (origPlanReviewEnabled === null) {
-        await cdp.eval(`localStorage.removeItem('planReviewEnabled')`);
-      } else {
-        await cdp.eval(`localStorage.setItem('planReviewEnabled', ${JSON.stringify(origPlanReviewEnabled)})`);
-      }
-    } catch { /* 忽略 */ }
     cdp.close();
   }
   killApp();
@@ -276,22 +263,6 @@ async function cleanup() {
       process.kill(-child.pid, 'SIGKILL');
     } catch { /* 忽略 */ }
   }
-  // 恢复用户真实设置文件（冒烟期间写入过标志性 customPrompt 并切到 mock 后端）
-  if (settingsTouched) {
-    try {
-      if (origSettingsRaw === null) fs.rmSync(settingsFile, { force: true });
-      else fs.writeFileSync(settingsFile, origSettingsRaw, 'utf8');
-    } catch { /* 忽略 */ }
-  }
-  // 清掉本次运行写入的评审历史（按临时仓库路径）
-  try {
-    const histFile = path.join(userData, 'review-history.json');
-    const all = JSON.parse(fs.readFileSync(histFile, 'utf8'));
-    if (all && typeof all === 'object' && Object.prototype.hasOwnProperty.call(all, repo)) {
-      delete all[repo];
-      fs.writeFileSync(histFile, JSON.stringify(all, null, 2), 'utf8');
-    }
-  } catch { /* 忽略 */ }
   // 关闭 mock SSE 服务（先销毁 keep-alive 连接）
   if (mockServer) {
     try {
@@ -299,17 +270,6 @@ async function cleanup() {
       mockServer.close();
     } catch { /* 忽略 */ }
   }
-  try {
-    fs.rmSync(plansHashDir, { recursive: true, force: true });
-  } catch { /* 忽略 */ }
-  // 清掉本次运行写入「最近项目」的临时仓库路径
-  try {
-    const recentsFile = path.join(userData, 'recent-projects.json');
-    const recents = JSON.parse(fs.readFileSync(recentsFile, 'utf8'));
-    if (Array.isArray(recents) && recents.includes(repo)) {
-      fs.writeFileSync(recentsFile, JSON.stringify(recents.filter((p) => p !== repo), null, 2));
-    }
-  } catch { /* 忽略 */ }
   try {
     fs.rmSync(tmp, { recursive: true, force: true });
   } catch { /* 忽略 */ }
@@ -320,14 +280,16 @@ async function main() {
   createTestRepo();
   check('准备临时 git 测试仓库（含类/Service 改动）', fs.existsSync(path.join(repo, '.git')));
 
-  // 防止上次失败残留
-  fs.rmSync(plansHashDir, { recursive: true, force: true });
-
   // ② 启动 Electron（detached 成独立进程组，便于整体 kill）
   child = spawn(
     'npx',
     ['--no-install', 'electron', '.', `--remote-debugging-port=${CDP_PORT}`, repo],
-    { cwd: ROOT, detached: true, stdio: ['ignore', 'pipe', 'pipe'] },
+    {
+      cwd: ROOT,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, REVIEWFLOW_USER_DATA_DIR: userData },
+    },
   );
   child.on('exit', () => {
     childExited = true;
@@ -355,8 +317,7 @@ async function main() {
   check('渲染进程就绪（autoReview 桥接可用）', booted);
   if (!booted) throw new Error('渲染进程未就绪，终止后续断言');
 
-  // 固定开启「评审时参照方案」，避免本机 localStorage 残留状态影响断言（结束时还原）
-  origPlanReviewEnabled = await cdp.eval(`localStorage.getItem('planReviewEnabled')`);
+  // 固定开启「评审时参照方案」
   await cdp.eval(`localStorage.setItem('planReviewEnabled', '1')`);
 
   // ③ 黑盒断言：6 个 tab 按钮
@@ -442,12 +403,11 @@ async function main() {
   );
   check('多角度 Review 出现「需求符合度」chip', chipOk);
 
-  // ---------- 扩面①：设置保存往返（操作用户真实设置文件，cleanup 里按原始字节恢复） ----------
+  // ---------- 扩面①：设置保存往返 ----------
   origSettings = await cdp.eval('window.autoReview.getSettings()');
   check('读取当前设置（getSettings 返回对象）', !!(origSettings && typeof origSettings === 'object'));
   const marker = `smoke-marker-${Date.now()}`;
   await cdp.eval(`window.autoReview.saveSettings(${JSON.stringify({ customPrompt: marker })})`);
-  settingsTouched = true;
   const reread = await cdp.eval('window.autoReview.getSettings()');
   check('设置保存往返：saveSettings 写入标志性 customPrompt 后读回一致',
     !!(reread && reread.customPrompt === marker), `实际：${reread && reread.customPrompt}`);
@@ -545,7 +505,8 @@ window.__smokeUnsub = window.autoReview.onAiChunk(({ text }) => {
     status: 'added',
     hunks: [{ header: '@@ -0,0 +1,3 @@', lines: [{ type: 'add', content: 'export const x = 1;', newLine: 1 }] }],
   };
-  const concPayload = (runId) => JSON.stringify({ folder: repo, file: concFile, runId });
+  const concPayload = (runId) => JSON.stringify({ folder: repo, file: { ...concFile,
+    hunks: [{ ...concFile.hunks[0], lines: [{ type: 'add', content: `export const x = '${runId}';`, newLine: 1 }] }] }, runId });
   await cdp.eval(`window.__conc1 = window.autoReview.analyzeFile(${concPayload('smoke-conc-1')})
   .then(() => 'done-1', (err) => ` + '`err-1:${String((err && err.message) || err)}`' + `); 'ok'`);
   await cdp.eval(`window.__conc2 = window.autoReview.analyzeFile(${concPayload('smoke-conc-2')})
