@@ -31,12 +31,32 @@ contextBridge.exposeInMainWorld('autoReview', {
   resumeRun: (runId) => ipcRenderer.invoke('ai:resume', runId),
   explainFollowUp: (payload) => ipcRenderer.invoke('ai:explainFollowUp', payload),
   reviewFollowUp: (payload) => ipcRenderer.invoke('ai:reviewFollowUp', payload),
+  listChatThreads: (payload) => ipcRenderer.invoke('chat:list', payload),
+  getChatThread: (payload) => ipcRenderer.invoke('chat:get', payload),
+  createChatThread: (payload) => ipcRenderer.invoke('chat:create', payload),
+  sendChatMessage: (payload) => ipcRenderer.invoke('chat:send', payload),
+  listFileAnalyses: (payload) => ipcRenderer.invoke('fileAnalysis:list', payload),
+  generateFixPatch: (payload) => ipcRenderer.invoke('fix:generatePatch', payload),
+  applyFixPatch: (payload) => ipcRenderer.invoke('fix:applyPatch', payload),
+  revertFixPatch: (payload) => ipcRenderer.invoke('fix:revertPatch', payload),
+  verifyFinding: (payload) => ipcRenderer.invoke('fix:verifyFinding', payload),
+  getHandoffPrompt: (payload) => ipcRenderer.invoke('fix:handoffPrompt', payload),
+  estimateRun: (payload) => ipcRenderer.invoke('ai:estimate', payload),
   saveReview: (payload) => ipcRenderer.invoke('review:save', payload),
   updateReviewStats: (payload) => ipcRenderer.invoke('review:updateStats', payload),
-  listReviews: (folder) => ipcRenderer.invoke('review:list', folder),
+  listReviews: (folder, options) => ipcRenderer.invoke('review:list', folder, options),
+  getReview: (payload) => ipcRenderer.invoke('review:get', payload),
+  deleteReview: (payload) => ipcRenderer.invoke('review:delete', payload),
+  renameReview: (payload) => ipcRenderer.invoke('review:rename', payload),
+  setReviewPinned: (payload) => ipcRenderer.invoke('review:setPinned', payload),
   checklistList: (folder) => ipcRenderer.invoke('checklist:list', folder),
   checklistSave: (payload) => ipcRenderer.invoke('checklist:save', payload),
   checklistSetStatus: (payload) => ipcRenderer.invoke('checklist:setStatus', payload),
+  checklistRuleSuggestions: (payload) => ipcRenderer.invoke('checklist:ruleSuggestions', payload),
+  checklistDismissRuleSuggestion: (payload) => ipcRenderer.invoke('checklist:dismissRuleSuggestion', payload),
+  previewRuleAppend: (payload) => ipcRenderer.invoke('rules:previewAppend', payload),
+  appendProjectRule: (payload) => ipcRenderer.invoke('rules:append', payload),
+  getEffectiveRules: (payload) => ipcRenderer.invoke('rules:effective', payload),
   exportReview: (payload) => ipcRenderer.invoke('review:export', payload),
   listPlans: (folder) => ipcRenderer.invoke('plan:list', folder),
   createPlan: (payload) => ipcRenderer.invoke('plan:create', payload),
@@ -64,6 +84,11 @@ contextBridge.exposeInMainWorld('autoReview', {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on('ai:chunk', listener);
     return () => ipcRenderer.removeListener('ai:chunk', listener);
+  },
+  onRunsChanged: (callback) => {
+    const listener = (_event, runs) => callback(runs);
+    ipcRenderer.on('ai:runs', listener);
+    return () => ipcRenderer.removeListener('ai:runs', listener);
   },
   onFsChanged: (callback) => {
     const listener = () => callback();

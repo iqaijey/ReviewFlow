@@ -1,13 +1,29 @@
-const { app, BrowserWindow, dialog, ipcMain, screen, Menu } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, screen, Menu, shell } = require('electron');
+const { pathToFileURL } = require('url');
+const { terminateActiveChildren } = require('./ai/cli');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+
+// 测试或隔离运行时使用独立数据目录
+if (typeof process.env.REVIEWFLOW_USER_DATA_DIR === 'string' && process.env.REVIEWFLOW_USER_DATA_DIR.length > 0) {
+  const userDataDir = path.resolve(process.env.REVIEWFLOW_USER_DATA_DIR);
+  fs.mkdirSync(userDataDir, { recursive: true });
+  app.setPath('userData', userDataDir);
+}
 
 const git = require('./git');
 const ai = require('./ai');
 const settingsStore = require('./settings');
 const iconManager = require('./iconManager');
 const store = require('./store');
+const projectRules = require('./projectRules');
+const chatStore = require('./chatStore');
+const chatService = require('./chatService');
+const fixLoop = require('./fixLoop');
+const { estimateRun } = require('./estimate');
+const { completeReview } = require('./reviewLifecycle');
+function persistCompleted(result) { return completeReview(result, ai.getCompletionContext(result)); }
 const planStore = require('./planStore');
 const urlFetch = require('./urlFetch');
 const updateChecker = require('./updateChecker');
@@ -104,7 +120,16 @@ function createWindow() {
     saveWindowState(win);
   });
 
-  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  const indexPath = path.join(__dirname, '..', 'renderer', 'index.html');
+  const appUrl = pathToFileURL(indexPath).href;
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => console.warn('无法打开外部链接'));
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (url.split('#')[0] !== appUrl) event.preventDefault();
+  });
+  win.loadFile(indexPath);
   win.on('closed', () => stopWatcher());
 }
 
@@ -112,8 +137,11 @@ function createWindow() {
 let watcher = null;
 /** @type {ReturnType<typeof setTimeout> | null} */
 let watcherTimer = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let watcherRetryTimer = null;
 
 function stopWatcher() {
+  if (watcherRetryTimer) { clearTimeout(watcherRetryTimer); watcherRetryTimer = null; }
   if (watcherTimer) {
     clearTimeout(watcherTimer);
     watcherTimer = null;
@@ -124,9 +152,18 @@ function stopWatcher() {
   }
 }
 
-function startWatcher(folder, sender) {
+function startWatcher(folder, sender, retried = false) {
   stopWatcher();
-  watcher = fs.watch(folder, { recursive: true }, (_eventType, filename) => {
+  const failed = () => {
+    stopWatcher();
+    console.warn('文件监听已停止');
+    if (!retried && !sender.isDestroyed()) watcherRetryTimer = setTimeout(() => {
+      watcherRetryTimer = null;
+      if (!sender.isDestroyed()) startWatcher(folder, sender, true);
+    }, 5000);
+  };
+  try {
+    watcher = fs.watch(folder, { recursive: true }, (_eventType, filename) => {
     if (!filename) return;
     const normalized = `/${filename.split(path.sep).join('/')}`;
     if (normalized.includes('/node_modules/') || normalized.includes('/.git/')) return;
@@ -135,7 +172,11 @@ function startWatcher(folder, sender) {
       watcherTimer = null;
       if (!sender.isDestroyed()) sender.send('fs:changed');
     }, 1500);
-  });
+    });
+    watcher.on('error', failed);
+  } catch {
+    failed();
+  }
 }
 
 // 方案图片的磁盘绝对路径（与 planStore 存储结构一致：plans/<sha1(folder)前16位>/<planId>/images/），
@@ -151,6 +192,14 @@ function planImagePaths(folder, planId, imageNames) {
 }
 
 function registerIpcHandlers() {
+  ai.onRunsChanged(() => {
+    const runs = ai.getRuns();
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send('ai:runs', runs);
+      }
+    }
+  });
   ipcMain.handle('app:getInitialFolder', async () => getInitialFolder());
   ipcMain.handle('app:getVersion', async () => app.getVersion());
 
@@ -218,7 +267,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('settings:get', async () => {
-    return settingsStore.getSettings();
+    return settingsStore.getPublicSettings();
   });
 
   ipcMain.handle('settings:save', async (_event, settings) => {
@@ -242,7 +291,7 @@ function registerIpcHandlers() {
       kind: 'presets',
       version: 1,
       exportedAt: new Date().toISOString(),
-      presets,
+      presets: settingsStore.sanitizePresets(presets),
     };
     await fs.promises.writeFile(result.filePath, JSON.stringify(payload, null, 2), 'utf8');
     return { count: presets.length, filePath: result.filePath };
@@ -273,7 +322,7 @@ function registerIpcHandlers() {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
       });
-      return await ai.analyzeOverview(payload);
+      return persistCompleted(await ai.analyzeOverview(payload));
     } catch (err) {
       throw new Error(`AI 概述分析失败：${err.message}`);
     }
@@ -284,14 +333,17 @@ function registerIpcHandlers() {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
       });
-      return await ai.analyzeOverviewMulti(payload);
+      return persistCompleted(await ai.analyzeOverviewMulti(payload));
     } catch (err) {
       throw new Error(`多模型分析失败：${err.message}`);
     }
   });
 
-  ipcMain.handle('ai:explainChange', async (_event, payload) => {
+  ipcMain.handle('ai:explainChange', async (event, payload) => {
     try {
+      ai.setChunkSender((runId, text) => {
+        if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+      });
       return await ai.explainChange(payload);
     } catch (err) {
       throw new Error(`AI 改动解释失败：${err.message}`);
@@ -314,7 +366,7 @@ function registerIpcHandlers() {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
       });
-      return await ai.explainFull(payload);
+      return persistCompleted(await ai.explainFull(payload));
     } catch (err) {
       throw new Error(`AI 完整讲解失败：${err.message}`);
     }
@@ -336,9 +388,39 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('review:list', async (_event, folder) => {
-    return store.listReviews(folder);
+  ipcMain.handle('review:list', async (_event, folder, options) => {
+    return store.listReviews(folder, options);
   });
+  ipcMain.handle('review:get', async (_event, payload) => store.getReview(payload || {}));
+  ipcMain.handle('review:delete', async (_event, payload) => store.deleteReview(payload || {}));
+  ipcMain.handle('review:rename', async (_event, payload) => store.renameReview(payload || {}));
+  ipcMain.handle('review:setPinned', async (_event, payload) => store.setReviewPinned(payload || {}));
+  ipcMain.handle('chat:list', async (_event, payload) => chatStore.list(payload || {}));
+  ipcMain.handle('chat:get', async (_event, payload) => chatStore.get(payload || {}));
+  ipcMain.handle('chat:create', async (_event, payload) => chatService.create(payload || {}));
+  ipcMain.handle('chat:send', async (event, payload) => {
+    ai.setChunkSender((runId, text) => {
+      if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+    });
+    return chatService.send(payload || {});
+  });
+  ipcMain.handle('fileAnalysis:list', async (_event, payload) => ai.listFileAnalyses(payload || {}));
+  ipcMain.handle('ai:estimate', async (_event, payload) => estimateRun(payload || {}));
+  ipcMain.handle('fix:generatePatch', async (event, payload) => {
+    ai.setChunkSender((runId, text) => {
+      if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+    });
+    return fixLoop.generatePatch(payload || {});
+  });
+  ipcMain.handle('fix:applyPatch', async (_event, payload) => fixLoop.applyPatch(payload || {}));
+  ipcMain.handle('fix:revertPatch', async (_event, payload) => fixLoop.revertPatch(payload || {}));
+  ipcMain.handle('fix:verifyFinding', async (event, payload) => {
+    ai.setChunkSender((runId, text) => {
+      if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
+    });
+    return fixLoop.verifyFinding(payload || {});
+  });
+  ipcMain.handle('fix:handoffPrompt', async (_event, payload) => fixLoop.handoffPrompt(payload || {}));
 
   ipcMain.handle('checklist:list', async (_event, folder) => {
     return store.listChecklist(folder);
@@ -355,6 +437,11 @@ function registerIpcHandlers() {
       throw new Error(`更新清单状态失败：${err.message}`);
     }
   });
+  ipcMain.handle('checklist:ruleSuggestions', async (_event, payload) => projectRules.listSuggestions(payload));
+  ipcMain.handle('checklist:dismissRuleSuggestion', async (_event, payload) => projectRules.dismissSuggestion(payload));
+  ipcMain.handle('rules:previewAppend', async (_event, payload) => projectRules.previewAppend(payload));
+  ipcMain.handle('rules:append', async (_event, payload) => projectRules.appendRule(payload));
+  ipcMain.handle('rules:effective', async (_event, payload) => require('./effectiveRules').getEffectiveRules(payload || {}));
 
   ipcMain.handle('review:export', async (_event, payload) => {
     const ext = payload && payload.ext === 'html' ? 'html' : 'md';
@@ -418,7 +505,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('ai:resume', async (_event, runId) => {
     try {
-      return await ai.resumeRun(runId);
+      return persistCompleted(await ai.resumeRun(runId));
     } catch (err) {
       throw new Error(`继续运行失败：${err.message}`);
     }
@@ -635,5 +722,19 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+let quitCleanupStarted = false;
+let quitCleanupFinished = false;
+app.on('before-quit', (event) => {
+  if (quitCleanupFinished) return;
+  event.preventDefault();
+  if (quitCleanupStarted) return;
+  quitCleanupStarted = true;
+  stopWatcher();
+  terminateActiveChildren().finally(() => {
+    quitCleanupFinished = true;
+    app.quit();
+  });
+});
+
 // 导出窗口状态读写逻辑供 node 层测试（Electron 运行时不使用）
-module.exports = { readWindowState, normalizeWindowState, saveWindowState };
+module.exports = { readWindowState, normalizeWindowState, saveWindowState, startWatcher, stopWatcher, createWindow };
