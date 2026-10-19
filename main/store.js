@@ -48,6 +48,20 @@ function listReviews(folder) {
   return list;
 }
 
+// 按 id 原地更新评审记录的 stats（维度标记回写），不再整条重写历史
+function updateReviewStats({ folder, id, stats }) {
+  if (!folder || typeof folder !== 'string') throw new Error('更新评审失败：缺少项目路径');
+  if (!id || typeof id !== 'string') throw new Error('更新评审失败：缺少记录 id');
+  const file = storeFile('review-history.json');
+  const all = readJson(file, {});
+  const list = Array.isArray(all[folder]) ? all[folder] : [];
+  const entry = list.find((it) => it && it.id === id);
+  if (!entry) throw new Error('评审记录不存在');
+  entry.stats = { ...(entry.stats || {}), ...(stats || {}) };
+  writeJson(file, all);
+  return entry;
+}
+
 function getRecentProjects() {
   const list = readJson(storeFile('recent-projects.json'), []);
   return Array.isArray(list) ? list.filter((p) => typeof p === 'string') : [];
@@ -105,6 +119,6 @@ function setChecklistStatus({ folder, id, status }) {
 }
 
 module.exports = {
-  saveReview, listReviews, getRecentProjects, addRecentProject,
+  saveReview, listReviews, updateReviewStats, getRecentProjects, addRecentProject,
   listChecklist, saveChecklist, setChecklistStatus,
 };
