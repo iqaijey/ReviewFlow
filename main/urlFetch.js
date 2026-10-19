@@ -1,6 +1,11 @@
 // 链接导入：隐藏 BrowserWindow 抓取 PRD 网页正文 / 设计稿网页截图，
 // 使用持久 session（persist:planfetch）复用登录态；遇到登录墙时弹出窗口让用户登录后重试
 const { BrowserWindow, session } = require('electron');
+const { assertSafeHop, assertSafeResource, assertConnectedAddress, privateHost, readBoundedBody, fetchWithRedirects, withFetchTimeout } = require('./urlSafety');
+const navigationStates = new Map();
+const windowStates = new WeakMap();
+let requestGuardInstalled = false;
+let partitionCleanup = Promise.resolve();
 
 const TEXT_CAP = 50000;
 const PAGE_TIMEOUT_MS = 30000;
@@ -53,8 +58,40 @@ function looksLikeMojibake(text) {
   return runChars / s.length > 0.05;
 }
 
-function createFetchWindow(width, height) {
-  return new BrowserWindow({
+async function createFetchWindow(width, height, initialPrivate) {
+  const partition = session.fromPartition('persist:planfetch');
+  if (!requestGuardInstalled) {
+    requestGuardInstalled = true;
+    // 公网导入的所有网络资源共用目的地址策略，不能由子资源绕过。
+    partition.webRequest.onBeforeRequest((details, callback) => {
+      const state = navigationStates.get(details.webContentsId);
+      if (!state) return callback({ cancel: true });
+      if (state.error) return callback({ cancel: true });
+      Promise.resolve().then(async () => {
+        if (details.resourceType === 'mainFrame') {
+          const next = assertHttpUrl(details.url);
+          await assertSafeHop(state.initialPrivate, next);
+          state.current = next;
+        } else if (!state.initialPrivate) await assertSafeResource(false, details.url);
+        callback({ cancel: Boolean(state.error) || navigationStates.get(details.webContentsId) !== state });
+      }).catch((error) => {
+        state.fail(error);
+        callback({ cancel: true });
+      });
+    });
+    const connected = (details) => {
+      const state = navigationStates.get(details.webContentsId);
+      if (!state) return;
+      try { assertConnectedAddress(state.initialPrivate, details); }
+      catch (error) { state.fail(error); }
+    };
+    partition.webRequest.onResponseStarted(connected);
+    partition.webRequest.onBeforeRedirect(connected);
+    partition.webRequest.onCompleted(connected);
+  }
+  await partitionCleanup;
+  await partition.setProxy({ mode: 'direct' });
+  const win = new BrowserWindow({
     show: false,
     width,
     height,
@@ -62,20 +99,76 @@ function createFetchWindow(width, height) {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      session: session.fromPartition('persist:planfetch'),
+      session: partition,
     },
+  });
+  /** @type {{current:URL|null,error:Error|null,initialPrivate:boolean,rejectLoad:((error:Error)=>void)|null,fail:(error:Error)=>void}} */
+  const state = { current: null, error: null, initialPrivate, rejectLoad: null, fail: (error) => {
+    state.error ||= error;
+    state.rejectLoad?.(state.error);
+    if (!win.isDestroyed()) win.webContents.stop();
+  } };
+  navigationStates.set(win.webContents.id, state);
+  windowStates.set(win, state);
+  const navigate = (event, url) => {
+    event.preventDefault();
+    Promise.resolve().then(async () => {
+      const next = assertHttpUrl(url);
+      await assertSafeHop(state.initialPrivate, next);
+      if (!win.isDestroyed()) await win.loadURL(next.href);
+    }).catch((error) => {
+      state.fail(error);
+    });
+  };
+  win.webContents.on('will-redirect', navigate);
+  win.webContents.on('will-navigate', navigate);
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const id = win.webContents.id;
+  win.once('closed', () => {
+    navigationStates.delete(id);
+    if (!navigationStates.size) {
+      partitionCleanup = partition.clearStorageData({ storages: ['serviceworkers', 'cachestorage'] })
+        .then(() => partition.closeAllConnections()).catch((error) => state.fail(error));
+    }
+  });
+  return win;
+}
+
+async function destroyWindow(win) {
+  if (win && !win.isDestroyed()) win.destroy();
+  await partitionCleanup;
+  if (win) assertWindowSafe(win);
+}
+
+async function loadWithTimeout(win, url) {
+  const state = navigationStates.get(win.webContents.id);
+  if (state.error) throw state.error;
+  state.current = null;
+  await new Promise((resolve, reject) => {
+    const finish = (error = null) => {
+      clearTimeout(timer);
+      state.rejectLoad = null;
+      win.webContents.removeListener('did-finish-load', loaded);
+      win.webContents.removeListener('did-fail-load', failed);
+      if (error) reject(error); else resolve(undefined);
+    };
+    const loaded = () => finish(state.error);
+    const failed = (_event, code, description, _url, isMainFrame) => {
+      if (isMainFrame && code !== -3) finish(state.error || new Error(`页面加载失败：${description}`));
+    };
+    const timer = setTimeout(() => finish(state.error || new Error('页面加载超时（30 秒）')), PAGE_TIMEOUT_MS);
+    state.rejectLoad = finish;
+    win.webContents.once('did-finish-load', loaded);
+    win.webContents.on('did-fail-load', failed);
+    win.loadURL(url).catch((error) => {
+      if (state.error || (error.code !== 'ERR_ABORTED' && error.errno !== -3)) finish(state.error || error);
+    });
   });
 }
 
-function destroyWindow(win) {
-  if (win && !win.isDestroyed()) win.destroy();
-}
-
-function loadWithTimeout(win, url) {
-  return Promise.race([
-    win.loadURL(url),
-    sleep(PAGE_TIMEOUT_MS).then(() => { throw new Error('页面加载超时（30 秒）'); }),
-  ]);
+function assertWindowSafe(win) {
+  const error = windowStates.get(win)?.error;
+  if (error) throw error;
 }
 
 // 弹出窗口让用户登录 / 操作，用户关闭窗口后 resolve(false)（此时窗口已销毁）；
@@ -88,7 +181,7 @@ function promptLogin(win) {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      destroyWindow(win); // 触发 closed
+      win.destroy(); // 触发 closed
     }, LOGIN_WAIT_MS);
     win.setTitle('登录后关闭此窗口，将自动重试抓取');
     win.once('closed', () => {
@@ -109,7 +202,9 @@ const EXTRACT_JS = `(() => {
 async function extractPage(win, url, waitMs) {
   await loadWithTimeout(win, url);
   await sleep(waitMs);
+  assertWindowSafe(win);
   const result = await win.webContents.executeJavaScript(EXTRACT_JS);
+  assertWindowSafe(win);
   return {
     title: String((result && result.title) || '').trim(),
     text: String((result && result.text) || '').slice(0, TEXT_CAP),
@@ -127,45 +222,59 @@ function decodeEntities(s) {
 }
 
 // 回退路径：直接 fetch HTML 并去标签提取正文
-async function fetchPrdFallback(parsed) {
-  const res = await fetch(parsed.href, { redirect: 'follow', headers: { 'user-agent': UA } });
-  if (!res.ok) throw new Error(`网页请求失败（HTTP ${res.status}），页面可能需要登录`);
-  const html = await res.text();
-  const title = decodeEntities(
-    (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '',
-  ).trim();
-  const text = decodeEntities(html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
-    .replace(/<[^>]+>/g, '\n'))
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n+/g, '\n\n')
-    .trim()
-    .slice(0, TEXT_CAP);
-  if (text.length < 20) throw new Error('未能从网页提取到有效正文，页面可能需要登录后查看');
-  return { title: title || parsed.hostname, text };
+/** @param {URL} parsed @param {boolean} [initialPrivate] */
+async function fetchPrdFallback(parsed, initialPrivate = undefined) {
+  return withFetchTimeout(async (signal) => {
+    const res = await fetchWithRedirects(parsed, signal, UA, initialPrivate);
+    if (!res.ok) {
+      await res.body?.cancel();
+      throw new Error(`网页请求失败（HTTP ${res.status}），页面可能需要登录`);
+    }
+    const mime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (!['text/html', 'text/plain', 'application/xhtml+xml'].includes(mime)) {
+      await res.body?.cancel();
+      throw new Error('PRD 链接内容类型不支持，请提供 HTML 或纯文本');
+    }
+    const html = (await readBoundedBody(res, 5 * 1024 * 1024)).toString('utf8');
+    const title = decodeEntities(
+      (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '',
+    ).trim();
+    const text = decodeEntities(html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+      .replace(/<[^>]+>/g, '\n'))
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s*\n+/g, '\n\n')
+      .trim()
+      .slice(0, TEXT_CAP);
+    if (text.length < 20) throw new Error('未能从网页提取到有效正文，页面可能需要登录后查看');
+    return { title: title || parsed.hostname, text };
+  });
 }
 
 async function fetchPrdFromUrl(url) {
   const parsed = assertHttpUrl(url);
+  const initialPrivate = await withFetchTimeout(() => privateHost(parsed));
   /** @type {BrowserWindow | null} */
   let win = null;
   /** @type {{ title: string, text: string } | null} */
   let result = null;
   try {
     try {
-      win = createFetchWindow(1280, 800);
+      win = await createFetchWindow(1280, 800, initialPrivate);
       result = await extractPage(win, parsed.href, PRD_WAIT_MS);
       if (looksLikeLoginWall(result.title, result.text)) {
         const timedOut = await promptLogin(win);
-        win = createFetchWindow(1280, 800);
+        assertWindowSafe(win);
+        win = await createFetchWindow(1280, 800, initialPrivate);
         result = await extractPage(win, parsed.href, PRD_WAIT_MS);
         if (timedOut && looksLikeLoginWall(result.title, result.text)) {
           throw new Error('登录窗口等待超时，请登录后重试');
         }
       }
     } catch (err) {
+      if (win) assertWindowSafe(win);
       if (err && String(err.message).includes('登录窗口等待超时')) throw err;
       result = null; // 隐藏窗口抓取失败，走 fetch 回退
     }
@@ -173,18 +282,24 @@ async function fetchPrdFromUrl(url) {
     // 检测到乱码时回退 fetch 路径（res.text() 按规范 UTF-8 解码），title 也从 <title> 重取
     if (result && looksLikeMojibake(`${result.title}\n${result.text.slice(0, 2000)}`)) {
       try {
-        const fallback = await fetchPrdFallback(parsed);
+        const fallback = await fetchPrdFallback(parsed, initialPrivate);
         if (!looksLikeMojibake(`${fallback.title}\n${fallback.text.slice(0, 2000)}`)) {
+          if (win) assertWindowSafe(win);
           return fallback;
         }
-      } catch { /* 回退失败或回退后仍乱码：保留原结果照常返回 */ }
+      } catch (error) {
+        if (error.code === 'ERR_UNSAFE_URL_DESTINATION') throw error;
+      }
     }
+    if (win) assertWindowSafe(win);
     if (result && result.text.trim().length >= 20) {
       return { title: result.title || parsed.hostname, text: result.text };
     }
-    return await fetchPrdFallback(parsed);
+    const fallback = await fetchPrdFallback(parsed, initialPrivate);
+    if (win) assertWindowSafe(win);
+    return fallback;
   } finally {
-    destroyWindow(win);
+    await destroyWindow(win);
   }
 }
 
@@ -222,14 +337,19 @@ function imageNameFromUrl(parsed, mime) {
 
 async function pageMeta(win) {
   try {
-    return await win.webContents.executeJavaScript(EXTRACT_JS);
-  } catch {
+    assertWindowSafe(win);
+    const result = await win.webContents.executeJavaScript(EXTRACT_JS);
+    assertWindowSafe(win);
+    return result;
+  } catch (error) {
+    assertWindowSafe(win);
     return { title: '', text: '' };
   }
 }
 
 // 整页截图：量出页面高度（封顶 MAX_PAGE_HEIGHT）后调整窗口再 capturePage
 async function captureFullPage(win) {
+  assertWindowSafe(win);
   const height = await win.webContents.executeJavaScript(
     `Math.min(Math.max(` +
     `document.documentElement ? document.documentElement.scrollHeight : 0,` +
@@ -237,41 +357,44 @@ async function captureFullPage(win) {
   win.setContentSize(1440, Math.max(600, Number(height) || 900));
   await sleep(300); // 等重排与懒加载
   const image = await win.webContents.capturePage();
+  assertWindowSafe(win);
   return image.toPNG().toString('base64');
 }
 
 async function fetchDesignFromUrl(url) {
   const parsed = assertHttpUrl(url);
+  const initialPrivate = await withFetchTimeout(() => privateHost(parsed));
   // 图片直链：直接下载转 base64
-  /** @type {Response | null} */
-  let res = null;
-  try {
-    res = await fetch(parsed.href, { redirect: 'follow', headers: { 'user-agent': UA } });
-  } catch {
-    res = null;
-  }
-  const mime = res && res.ok
-    ? String(res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
-    : '';
-  if (res && res.ok && mime.startsWith('image/')) {
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!buf.length) throw new Error('图片内容为空');
-    return { name: imageNameFromUrl(parsed, mime), base64: buf.toString('base64'), mime };
-  }
-  if (res && res.body) {
-    try { res.body.cancel(); } catch { /* 忽略 */ }
-  }
+  const directImage = await withFetchTimeout(async (signal) => {
+    let res;
+    try { res = await fetchWithRedirects(parsed, signal, UA, initialPrivate); }
+    catch (error) {
+      if (error.code === 'ERR_UNSAFE_URL_DESTINATION' || /重定向|大小限制/.test(error.message) || signal.aborted) throw error;
+      return null;
+    }
+    const mime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (res.ok && mime.startsWith('image/')) {
+      const buf = await readBoundedBody(res, 20 * 1024 * 1024);
+      if (!buf.length) throw new Error('图片内容为空');
+      return { name: imageNameFromUrl(parsed, mime), base64: buf.toString('base64'), mime };
+    }
+    await res.body?.cancel();
+    if (res.ok && !['text/html', 'application/xhtml+xml'].includes(mime)) throw new Error('设计稿链接内容类型不支持，请提供图片或网页');
+    return null;
+  });
+  if (directImage) return directImage;
   // 网页（Figma 等）：隐藏窗口整页截图
   /** @type {BrowserWindow | null} */
   let win = null;
   try {
-    win = createFetchWindow(1440, 900);
+    win = await createFetchWindow(1440, 900, initialPrivate);
     await loadWithTimeout(win, parsed.href);
     await sleep(SHOT_WAIT_MS);
     const meta = await pageMeta(win);
     if (looksLikeLoginWall(meta.title, meta.text)) {
       const timedOut = await promptLogin(win);
-      win = createFetchWindow(1440, 900);
+      assertWindowSafe(win);
+      win = await createFetchWindow(1440, 900, initialPrivate);
       await loadWithTimeout(win, parsed.href);
       await sleep(SHOT_WAIT_MS);
       if (timedOut) {
@@ -288,7 +411,7 @@ async function fetchDesignFromUrl(url) {
       mime: 'image/png',
     };
   } finally {
-    destroyWindow(win);
+    await destroyWindow(win);
   }
 }
 

@@ -1,6 +1,14 @@
 const { test, after } = require('node:test');
 const assert = require('node:assert');
 const Module = require('module');
+const http = require('http');
+
+async function serve(t, handler) {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return new URL(`http://127.0.0.1:${server.address().port}/prd`);
+}
 
 const originalLoad = Module._load;
 Module._load = function (request, ...rest) {
@@ -94,48 +102,103 @@ test('decodeEntities 解码常见 HTML 实体', () => {
   assert.strictEqual(decodeEntities('无实体'), '无实体');
 });
 
-test('fetchPrdFallback 去标签提取正文与标题', async () => {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url, opts) => {
-    assert.strictEqual(url, 'https://example.com/prd');
-    assert.ok(typeof opts.headers['user-agent'] === 'string' && opts.headers['user-agent'].length > 0);
-    return {
-      ok: true,
-      text: async () =>
+test('fetchPrdFallback 去标签提取正文与标题', async (t) => {
+  const url = await serve(t, (req, res) => {
+    assert.strictEqual(req.url, '/prd');
+    assert.ok(req.headers['user-agent'].length > 0);
+    res.setHeader('content-type', 'text/html');
+    res.end(
         '<html><head><title>需求 &amp; 设计</title>' +
         '<style>.a{color:red}</style></head><body>' +
         '<script>var x = 1;</script>' +
         '<article><p>这是正文内容，需要足够长才不会被判定为无效正文。</p></article>' +
-        '</body></html>',
-    };
-  };
-  try {
-    const result = await fetchPrdFallback(new URL('https://example.com/prd'));
-    assert.strictEqual(result.title, '需求 & 设计');
-    assert.ok(result.text.includes('这是正文内容'));
-    assert.ok(!result.text.includes('var x'));
-    assert.ok(!result.text.includes('color:red'));
-    assert.ok(!result.text.includes('<p>'));
-  } finally {
-    globalThis.fetch = realFetch;
-  }
+        '</body></html>');
+  });
+  const result = await fetchPrdFallback(url);
+  assert.strictEqual(result.title, '需求 & 设计');
+  assert.ok(result.text.includes('这是正文内容'));
+  assert.ok(!result.text.includes('var x'));
+  assert.ok(!result.text.includes('color:red'));
+  assert.ok(!result.text.includes('<p>'));
 });
 
-test('fetchPrdFallback HTTP 错误与正文过短时抛错', async () => {
-  const realFetch = globalThis.fetch;
-  try {
-    globalThis.fetch = async () => ({ ok: false, status: 403 });
-    await assert.rejects(
-      () => fetchPrdFallback(new URL('https://example.com/x')),
-      /HTTP 403/,
-    );
+test('fetchPrdFallback HTTP 错误与正文过短时抛错', async (t) => {
+  let status = 403;
+  const url = await serve(t, (_req, res) => { res.writeHead(status, { 'content-type': 'text/html' }); res.end('<p>太短</p>'); });
+  await assert.rejects(
+    () => fetchPrdFallback(url),
+    /HTTP 403/,
+  );
 
-    globalThis.fetch = async () => ({ ok: true, text: async () => '<p>太短</p>' });
-    await assert.rejects(
-      () => fetchPrdFallback(new URL('https://example.com/x')),
-      /未能从网页提取到有效正文/,
-    );
-  } finally {
-    globalThis.fetch = realFetch;
-  }
+  status = 200;
+  await assert.rejects(
+    () => fetchPrdFallback(url),
+    /未能从网页提取到有效正文/,
+  );
+});
+
+test('PRD fallback 拒绝非文本类型和超限正文', async (t) => {
+  let mime = 'image/png';
+  const url = await serve(t, (_req, res) => {
+    res.setHeader('content-type', mime);
+    res.end(mime === 'image/png' ? 'image' : 'x'.repeat(5 * 1024 * 1024 + 1));
+  });
+  await assert.rejects(fetchPrdFallback(url), /内容类型不支持/);
+  mime = 'text/plain';
+  await assert.rejects(fetchPrdFallback(url), /大小限制/);
+});
+
+test('设计稿直链要求 image 类型并限制为 20 MiB', async (t) => {
+  let mime = 'image/png', oversized = false;
+  const url = await serve(t, (_req, res) => {
+    res.setHeader('content-type', mime);
+    if (oversized) res.setHeader('content-length', String(20 * 1024 * 1024 + 1));
+    res.end('png');
+  });
+  const result = await urlFetch.fetchDesignFromUrl(url.href);
+  assert.strictEqual(result.base64, Buffer.from('png').toString('base64'));
+  oversized = true;
+  await assert.rejects(urlFetch.fetchDesignFromUrl(url.href), /大小限制/);
+  oversized = false; mime = 'application/json';
+  await assert.rejects(urlFetch.fetchDesignFromUrl(url.href), /内容类型不支持/);
+});
+
+test('链接总超时覆盖 DNS 或正文挂起', async (t) => {
+  t.mock.timers.enable(['setTimeout']);
+  const { withFetchTimeout } = require('../../main/urlSafety');
+  let signal;
+  const pending = withFetchTimeout(async (value) => { signal = value; return new Promise(() => {}); });
+  t.mock.timers.tick(30000);
+  await assert.rejects(pending, /链接请求超时（30 秒）/);
+  assert.strictEqual(signal.aborted, true);
+});
+
+test('URL 安全：公网跳内网被拦截，用户直输内网仍允许', async (t) => {
+  const dns = require('dns').promises;
+  const { assertSafeHop, isPrivateAddress, fetchWithRedirects, readBoundedBody } = require('../../main/urlSafety');
+  t.mock.method(dns, 'lookup', async (host) => [{ address: host === 'public.test' ? '8.8.8.8' : '127.0.0.1', family: 4 }]);
+  for (const ip of ['0.0.0.0', '10.0.0.1', '172.16.0.1', '192.168.1.1', '169.254.1.1', '100.64.0.1', '224.0.0.1', '::', '::1', 'fc00::1', 'fe80::1', 'ff02::1', '::ffff:127.0.0.1']) assert.ok(isPrivateAddress(ip), ip);
+  assert.strictEqual(isPrivateAddress('8.8.8.8'), false);
+  await assert.rejects(assertSafeHop(false, new URL('http://internal.test')), /已阻止/);
+  const url = await serve(t, (_req, res) => res.end('内网正常正文'));
+  const response = await fetchWithRedirects(url, AbortSignal.timeout(1000), 'test');
+  assert.strictEqual(await response.text(), '内网正常正文');
+  await assert.rejects(readBoundedBody(new Response('x', { headers: { 'content-length': '100' } }), 10), /大小限制/);
+});
+
+test('公网初始分类不因来源 DNS 重绑定而改变，所有跳转目标重新解析', async (t) => {
+  const dns = require('dns').promises;
+  const { fetchWithRedirects } = require('../../main/urlSafety');
+  let sourceLookups = 0;
+  t.mock.method(dns, 'lookup', async (host) => [{ address: host === 'rebind.test' && ++sourceLookups === 1 ? '8.8.8.8' : '127.0.0.1', family: 4 }]);
+  let requests = 0, connections = 0;
+  const server = http.createServer((_req, res) => { requests++; res.end('不得访问'); });
+  server.on('connection', () => { connections++; });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = new URL(`http://127.0.0.1:${server.address().port}`);
+  await assert.rejects(fetchWithRedirects(new URL(`http://rebind.test:${url.port}/start`), new AbortController().signal, 'test'), /已阻止/);
+  assert.strictEqual(sourceLookups, 2);
+  assert.strictEqual(requests, 0);
+  assert.strictEqual(connections, 0);
 });
