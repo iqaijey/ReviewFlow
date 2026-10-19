@@ -1,0 +1,105 @@
+/* ReviewFlow - 工作区恢复、显式选区操作条、原生代码选择与逐句解析首轮操作样式 */
+
+/* ---------- diff 代码文本原生选择与行号列拖拽 ---------- */
+.diff-view .line-content {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.diff-line .line-no {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.diff-line.line-clickable .line-no {
+  cursor: pointer;
+}
+
+.diff-line.line-clickable .line-no:hover {
+  color: var(--accent);
+  background: var(--accent-bg-subtle);
+}
+
+.diff-line[aria-selected="true"] {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* ---------- diff 面板显式解析吸底/吸顶紧凑操作条 ---------- */
+.diff-selection-bar {
+  position: sticky;
+  bottom: var(--space-4);
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin: var(--space-3) var(--space-4) var(--space-4) auto;
+  padding: var(--space-2) var(--space-4);
+  background: var(--toast-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", sans-serif;
+  font-size: 12px;
+  color: var(--text);
+  user-select: none;
+}
+
+.diff-selection-bar[hidden] {
+  display: none;
+}
+
+.diff-selection-summary {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-selection-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.diff-selection-btn {
+  min-height: 26px;
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+/* ---------- 逐句解析：首轮回答操作栏（复制 / 重新解析） ---------- */
+.explain-initial-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.explain-initial-bar .ai-stats {
+  margin: 0;
+}
+
+.explain-initial-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.explain-action-btn {
+  min-height: 24px;
+  padding: 2px 10px;
+  font-size: 11px;
+}
