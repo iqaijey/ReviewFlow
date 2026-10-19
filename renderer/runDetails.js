@@ -32,7 +32,7 @@ export function createRunDetails(ctx) {
   };
 
   const buildCard = (runId) => {
-    const card = { pausing: false };
+    const card = { pausing: false, promptLoaded: false };
     const root = el('div', { class: 'run-card' });
     const head = el('div', { class: 'run-card-head' });
     const kindEl = el('span', { class: 'run-card-title' });
@@ -154,7 +154,17 @@ export function createRunDetails(ctx) {
     card.elapsedEl.textContent = `${((Date.now() - run.startedAt) / 1000).toFixed(1)}s`;
     card.cmdEl.textContent = run.command || '';
     card.promptTitle.textContent = `Prompt（${(run.promptChars || 0).toLocaleString()} 字符）`;
-    if (run.promptText && !card.promptEl.textContent) card.promptEl.textContent = run.promptText;
+    // promptText 已从轮询响应剥离（体积大），首次显示时按需取一次
+    if (!card.promptLoaded) {
+      card.promptLoaded = true;
+      if (typeof api.getRunPrompt === 'function') {
+        api.getRunPrompt(run.runId)
+          .then((text) => {
+            if (text && !card.promptEl.textContent) card.promptEl.textContent = text;
+          })
+          .catch(() => { /* 拿不到就只显示字符数 */ });
+      }
+    }
   };
 
   return function showRunDetails() {
@@ -181,45 +191,52 @@ export function createRunDetails(ctx) {
     closeBtn.addEventListener('click', close);
     document.body.appendChild(overlayEl);
 
+    let ticking = false;
     const tick = async () => {
-      /** @type {any[] | null} */
-      let runs = null;
+      if (ticking) return; // IPC 慢于 500ms 间隔时避免重入
+      ticking = true;
       try {
-        if (typeof api.listRuns === 'function') {
-          runs = await api.listRuns();
-        } else {
-          const run = await api.getCurrentRun();
-          runs = run ? [run] : [];
+        /** @type {any[] | null} */
+        let runs = null;
+        try {
+          if (typeof api.listRuns === 'function') {
+            runs = await api.listRuns();
+          } else {
+            const run = await api.getCurrentRun();
+            runs = run ? [run] : [];
+          }
+        } catch {
+          runs = null;
         }
-      } catch {
-        runs = null;
-      }
-      if (!overlay) return;
-      if (!Array.isArray(runs) || runs.length === 0) {
-        emptyEl.style.display = '';
-        for (const card of cards.values()) card.root.remove();
-        cards.clear();
-        return;
-      }
-      emptyEl.style.display = 'none';
-      const seen = new Set();
-      for (const run of runs) {
-        const runId = String(run.runId || '');
-        if (!runId) continue;
-        seen.add(runId);
-        let card = cards.get(runId);
-        if (!card) {
-          card = buildCard(runId);
-          cards.set(runId, card);
-          body.appendChild(card.root);
+        if (!overlay) return;
+        if (!Array.isArray(runs) || runs.length === 0) {
+          emptyEl.style.display = '';
+          for (const card of cards.values()) card.root.remove();
+          cards.clear();
+          return;
         }
-        updateCard(card, run);
-      }
-      for (const [runId, card] of cards) {
-        if (!seen.has(runId)) {
-          card.root.remove();
-          cards.delete(runId);
+        emptyEl.style.display = 'none';
+        const seen = new Set();
+        for (const run of runs) {
+          const runId = String(run.runId || '');
+          if (!runId) continue;
+          seen.add(runId);
+          let card = cards.get(runId);
+          if (!card) {
+            card = buildCard(runId);
+            cards.set(runId, card);
+            body.appendChild(card.root);
+          }
+          updateCard(card, run);
         }
+        for (const [runId, card] of cards) {
+          if (!seen.has(runId)) {
+            card.root.remove();
+            cards.delete(runId);
+          }
+        }
+      } finally {
+        ticking = false;
       }
     };
     timer = setInterval(tick, 500);
