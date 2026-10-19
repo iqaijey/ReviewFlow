@@ -1,14 +1,110 @@
-// 改动总览：基准选择 + 搜索 + 文件列表 + diff 视图，点击行派发 'line:select'
-const STATUS_LABEL = { modified: 'M', added: 'A', deleted: 'D', renamed: 'R' };
-const CUSTOM_BASE = '__custom__';
-const COMMITS_BASE = '__commits__';
+import { mountSplitter } from './overview/splitter.js';
+import { createEffectiveRules } from './overview/effectiveRules.js';
+import { createSelection } from './overview/selection.js';
+import { createStats } from './overview/stats.js';
+import { createSourceSelector } from './overview/sourceSelector.js';
+import { createFileList } from './overview/fileList.js';
+import { createDiffView } from './overview/diffView.js';
+import { createNavigation } from './overview/navigation.js';
+import { createLineInteraction } from './overview/lineInteraction.js';
+// 改动总览：基准选择 + 搜索 + 文件列表 + diff 视图，选中后显式点击操作条或 ⌘E 派发 'line:select'
+import { MIN_FILE_LIST_WIDTH, computeFileFingerprint, buildChangesSearchIndex } from '../lib/overviewPerf.js';
+
+const WORKTREE_MODES = new Set(['staged', 'unstaged', 'untracked']);
+
+const fallbackFileFingerprint = computeFileFingerprint;
 
 export default {
   id: 'overview',
   title: '改动总览',
 
   mount(container, ctx) {
-    const { el, bus, state, api, errText, toast, emptyState } = ctx;
+    const { el, bus, state, api, errText, toast, emptyState, workspaceState } = ctx;
+
+    const context = {
+      get state() { return state; },
+      get api() { return api; },
+      get effectiveRulesBtn() { return effectiveRulesBtn; },
+      get toast() { return toast; },
+      get errText() { return errText; },
+      get updateCollapseAllBtn() { return updateCollapseAllBtn; },
+      get el() { return el; },
+      get pendingSelection() { return pendingSelection; },
+      set pendingSelection(value) {
+        pendingSelection = value;
+        bus.dispatchEvent(new CustomEvent('explain:invalidate'));
+      },
+      get selectionBar() { return selectionBar; },
+      get explainSelectionBtn() { return explainSelectionBtn; },
+      get selectionSummary() { return selectionSummary; },
+      get diffView() { return diffView; },
+      get currentSelectedCpos() { return diffController.currentSelectedCpos; },
+      set currentSelectedCpos(value) { diffController.currentSelectedCpos = value; },
+      get currentFocusedCpos() { return diffController.currentFocusedCpos; },
+      get setFocusedCpos() { return diffController.setFocusedCpos; },
+      get fileList() { return fileList; },
+      get bus() { return bus; },
+      get clearSelectionBtn() { return clearSelectionBtn; },
+      get countReadFiles() { return countReadFiles; },
+      get readMarkers() { return readMarkers; },
+      set readMarkers(value) { readMarkers = value; },
+      get persistProjectPatch() { return persistProjectPatch; },
+      get renderFileList() { return fileListController.renderFileList; },
+      get readStatEl() { return readStatEl; },
+      set readStatEl(value) { readStatEl = value; },
+      get statsBar() { return statsBar; },
+      get semanticsNote() { return semanticsNote; },
+      get limitsBanner() { return limitsBanner; },
+      get baseSelect() { return baseSelect; },
+      get branchInfo() { return branchInfo; },
+      set branchInfo(value) { branchInfo = value; },
+      get ctx() { return ctx; },
+      get clearAllSelection() { return selection.clearAllSelection; },
+      get customBaseInput() { return customBaseInput; },
+      get isFileRead() { return isFileRead; },
+      get classSel() { return selection.classSel; },
+      get classKey() { return selection.classKey; },
+      get classLabel() { return selection.classLabel; },
+      get toggleClass() { return selection.toggleClass; },
+      get updateReadStat() { return stats.updateReadStat; },
+      get lastDiffFile() { return lastDiffFile; },
+      set lastDiffFile(value) { lastDiffFile = value; },
+      get scrollPositions() { return scrollPositions; },
+      set scrollPositions(value) { scrollPositions = value; },
+      get renderDiff() { return diffController.renderDiff; },
+      get applySearchHighlight() { return applySearchHighlight; },
+      get searchIndex() { return searchIndex; },
+      set searchIndex(value) { searchIndex = value; },
+      get searchQuery() { return searchQuery; },
+      set searchQuery(value) { searchQuery = value; },
+      get lastDiffRows() { return lastDiffRows; },
+      set lastDiffRows(value) { lastDiffRows = value; },
+      get applySearchHighlightInScope() { return applySearchHighlightInScope; },
+      get isHunkCollapsed() { return isHunkCollapsed; },
+      get setHunkCollapsed() { return setHunkCollapsed; },
+      get syncSelectionBar() { return selection.syncSelectionBar; },
+      get emptyState() { return emptyState; },
+      get searchTimer() { return searchTimer; },
+      set searchTimer(value) { searchTimer = value; },
+      get searchInput() { return searchInput; },
+      get ensureFileItemRendered() { return fileListController.ensureFileItemRendered; },
+      get fileItems() { return fileListController.fileItems; },
+      set fileItems(value) { fileListController.fileItems = value; },
+      get selectFile() { return fileListController.selectFile; },
+      get renderHunkSliceUpTo() { return diffController.renderHunkSliceUpTo; },
+      get filteredFiles() { return fileListController.filteredFiles; },
+      set filteredFiles(value) { fileListController.filteredFiles = value; },
+      get switchingBase() { return sourceSelector.switchingBase; },
+      set switchingBase(value) { sourceSelector.switchingBase = value; },
+      get hideCustomBaseInput() { return sourceSelector.hideCustomBaseInput; },
+      get applyBase() { return sourceSelector.applyBase; },
+      get ensureHunksRenderedThrough() { return diffController.ensureHunksRenderedThrough; },
+      get currentHunkStartCpos() { return diffController.currentHunkStartCpos; },
+      set currentHunkStartCpos(value) { diffController.currentHunkStartCpos = value; },
+      get clearLineSelectionDOM() { return selection.clearLineSelectionDOM; },
+      get container() { return container; },
+      get triggerExplicitExplain() { return selection.triggerExplicitExplain; },
+    };
 
     const statsBar = el('div', { class: 'overview-stats' });
 
@@ -27,96 +123,181 @@ export default {
     toolbar.appendChild(el('span', { class: 'toolbar-label' }, '基准'));
     toolbar.appendChild(baseSelect);
     toolbar.appendChild(customBaseInput);
+    const semanticsNote = el('span', {
+      class: 'source-semantics-note',
+      hidden: 'hidden',
+    });
+    toolbar.appendChild(semanticsNote);
     toolbar.appendChild(searchInput);
     // 对当前选中文件的所有 hunk 一键折叠/展开
     const collapseAllBtn = el('button', { class: 'btn', type: 'button' }, '全部折叠');
     collapseAllBtn.disabled = true;
     toolbar.appendChild(collapseAllBtn);
+    const effectiveRulesBtn = /** @type {HTMLButtonElement} */ (el('button', {
+      class: 'btn',
+      type: 'button',
+      title: '查看当前选中文件生效的 .reviewflow.md 规则',
+    }, '生效规则'));
+    effectiveRulesBtn.disabled = true;
+    toolbar.appendChild(effectiveRulesBtn);
+
+    const limitsBanner = el('div', {
+      class: 'overview-limits-banner',
+      role: 'status',
+      hidden: 'hidden',
+    });
 
     const body = el('div', { class: 'overview-body' });
-    const fileList = el('div', { class: 'file-list' });
-    const splitter = el('div', { class: 'splitter' });
+    const fileList = el('div', {
+      class: 'file-list',
+      role: 'listbox',
+      'aria-label': '改动文件列表',
+    });
+    const splitter = el('div', {
+      class: 'splitter',
+      role: 'separator',
+      tabindex: '0',
+      'aria-orientation': 'vertical',
+      'aria-label': '调整文件列表宽度',
+      'aria-valuemin': String(MIN_FILE_LIST_WIDTH),
+      'aria-valuemax': '600',
+      'aria-valuenow': '300',
+    });
     const diffView = el('div', { class: 'diff-view' });
     body.appendChild(fileList);
     body.appendChild(splitter);
     body.appendChild(diffView);
     container.appendChild(statsBar);
 
-    // 拖动分隔条调整文件列表宽度，持久化到设置文件
-    const MIN_LIST_W = 160;
-    fileList.style.width = '300px';
-    api.getSettings().then((s) => {
-      if (s && Number(s.overviewWidth) >= MIN_LIST_W) {
-        fileList.style.width = `${Number(s.overviewWidth)}px`;
-      }
-    }).catch(() => {});
-    splitter.addEventListener('mousedown', (ev) => {
-      ev.preventDefault();
-      splitter.classList.add('active');
-      const startX = ev.clientX;
-      const startW = fileList.getBoundingClientRect().width;
-      const onMove = (e) => {
-        const max = body.getBoundingClientRect().width - 240;
-        const w = Math.min(Math.max(startW + e.clientX - startX, MIN_LIST_W), max);
-        fileList.style.width = `${w}px`;
-      };
-      const onUp = () => {
-        splitter.classList.remove('active');
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        window.removeEventListener('blur', onUp);
-        const w = Math.round(fileList.getBoundingClientRect().width);
-        api.saveSettings({ overviewWidth: w }).catch(() => {});
-      };
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-      window.addEventListener('blur', onUp); // 窗口外松开鼠标时兜底收尾
-    });
+    mountSplitter({ body, splitter, fileList, api, toast, errText });
     container.appendChild(toolbar);
+    container.appendChild(limitsBanner);
     container.appendChild(body);
 
     // 无项目/无改动时：隐藏统计条与双栏，只显示一个居中的空状态
     const emptyHost = el('div', { class: 'overview-empty', style: 'display: none' });
     container.appendChild(emptyHost);
 
-    const readSet = new Set(); // 已读文件（按 path），切换项目时清空
-    let collapsed = new Set(); // 折叠的 hunk，key = `${file.path}#${hunkIndex}`
+    // diff 底部紧凑显式解析操作条（选区或类选中存在时显示）
+    const selectionBar = el('div', {
+      class: 'diff-selection-bar',
+      role: 'region',
+      'aria-label': '待解析选区操作',
+      hidden: 'hidden',
+    });
+    const selectionSummary = el('span', {
+      class: 'diff-selection-summary',
+      'aria-live': 'polite',
+      'aria-atomic': 'true',
+    }, '');
+    const selectionActions = el('div', { class: 'diff-selection-actions' });
+    const explainSelectionBtn = /** @type {HTMLButtonElement} */ (el('button', {
+      class: 'btn btn-primary diff-selection-btn',
+      type: 'button',
+      'aria-label': '解析选区（⌘E）',
+    }, '解析选区（⌘E）'));
+    const clearSelectionBtn = /** @type {HTMLButtonElement} */ (el('button', {
+      class: 'btn diff-selection-btn',
+      type: 'button',
+      'aria-label': '清除选区',
+    }, '清除'));
+    selectionActions.appendChild(explainSelectionBtn);
+    selectionActions.appendChild(clearSelectionBtn);
+    selectionBar.appendChild(selectionSummary);
+    selectionBar.appendChild(selectionActions);
+
+    /** @type {Record<string, string>} 已读标记：path -> diffFingerprint */
+    let readMarkers = {};
+    /** @type {Record<string, string[]>} 折叠的 hunk：path -> hunk.header[] */
+    let collapsedHunks = {};
+    /** @type {Record<string, number>} 各文件 diff 滚动位置：path -> scrollTop */
+    let scrollPositions = {};
     let knownFolder = null;
     let searchQuery = '';
     /** @type {HTMLElement | null} */
     let readStatEl = null;
+    /** @type {{ current: string, branches: string[] }} */
     let branchInfo = { current: '', branches: [] };
     /** @type {any} */
     let lastDiffFile = null; // 上次渲染 diff 的文件，用于重渲染时恢复滚动与选中行
     let lastDiffRows = [];
+    /** @type {any} 待解析的选区（未触发 AI 请求） */
+    let pendingSelection = null;
+
+    const persistProjectPatch = (patch) => {
+      if (!workspaceState || !state.folder) return;
+      workspaceState.updateProject(state.folder, patch);
+    };
+
+    const isFileRead = (file) => {
+      if (!file || !file.path) return false;
+      const savedFp = readMarkers[file.path];
+      if (!savedFp) return false;
+      return savedFp === fallbackFileFingerprint(file);
+    };
+
+    const countReadFiles = (files) => {
+      if (!Array.isArray(files)) return 0;
+      let count = 0;
+      for (const f of files) {
+        if (isFileRead(f)) count += 1;
+      }
+      return count;
+    };
+
+    const isHunkCollapsed = (filePath, header) => {
+      const list = collapsedHunks[filePath];
+      return Array.isArray(list) && list.includes(header);
+    };
+
+    const setHunkCollapsed = (filePath, header, shouldCollapse) => {
+      const prev = Array.isArray(collapsedHunks[filePath]) ? [...collapsedHunks[filePath]] : [];
+      const idx = prev.indexOf(header);
+      if (shouldCollapse && idx < 0) prev.push(header);
+      else if (!shouldCollapse && idx >= 0) prev.splice(idx, 1);
+      if (prev.length) collapsedHunks[filePath] = prev;
+      else delete collapsedHunks[filePath];
+      persistProjectPatch({ collapsedHunks: { ...collapsedHunks } });
+    };
 
     // 无选中文件（或文件无 hunk）时禁用；全部已折叠时切换为「全部展开」
     const updateCollapseAllBtn = () => {
       const file = state.selectedFile;
       const hunks = file && Array.isArray(file.hunks) ? file.hunks : [];
       collapseAllBtn.disabled = !hunks.length;
+      effectiveRulesBtn.disabled = !(state.folder && file && file.path);
       const allCollapsed = hunks.length > 0 &&
-        hunks.every((_, i) => collapsed.has(`${file.path}#${i}`));
+        hunks.every((hk) => isHunkCollapsed(file.path, hk.header));
       collapseAllBtn.textContent = allCollapsed ? '全部展开' : '全部折叠';
     };
     collapseAllBtn.addEventListener('click', () => {
       const file = state.selectedFile;
       if (!file || !file.hunks.length) return;
-      const allCollapsed = file.hunks.every((_, i) => collapsed.has(`${file.path}#${i}`));
-      file.hunks.forEach((_, i) => {
-        const key = `${file.path}#${i}`;
-        if (allCollapsed) collapsed.delete(key);
-        else collapsed.add(key);
-      });
-      renderDiff(file);
+      const allCollapsed = file.hunks.every((hk) => isHunkCollapsed(file.path, hk.header));
+      if (allCollapsed) {
+        delete collapsedHunks[file.path];
+      } else {
+        collapsedHunks[file.path] = file.hunks.map((hk) => hk.header);
+      }
+      persistProjectPatch({ collapsedHunks: { ...collapsedHunks } });
+      diffController.renderDiff(file);
       applySearchHighlight(false);
     });
 
+    createEffectiveRules(context);
+
     const showEmpty = (text, sub, hideChrome) => {
+      fileListController.cancelFileListLazy();
+      diffController.cancelDiffLazy();
       statsBar.style.display = 'none';
       body.style.display = 'none';
       toolbar.style.display = hideChrome ? 'none' : '';
+      if (hideChrome) {
+        semanticsNote.hidden = true;
+        limitsBanner.hidden = true;
+      }
       collapseAllBtn.disabled = true;
+      effectiveRulesBtn.disabled = true;
       lastDiffFile = null;
       lastDiffRows = [];
       emptyHost.style.display = '';
@@ -127,278 +308,36 @@ export default {
       emptyHost.appendChild(emptyState(text, sub, action));
     };
 
-    // ---------- 按类选择（逐句解析用） ----------
-    const classSel = new Map(); // key: `${file.path}#${name}#${startLine}` → { file, cls }
-    const classKey = (file, c) => `${file.path}#${c.name}#${c.startLine}`;
+    const selection = createSelection(context);
 
-    const classLabel = (c) => (c.kind === 'class' ? `class ${c.name}` : `${c.name}()`);
+    const stats = createStats(context);
 
-    // 类范围内的改动行（add/del），newLine 优先、del 行退回 oldLine 近似判断
-    const classChangedLines = (file, c) => {
-      const inRange = (n) => n != null && n >= c.startLine && n <= c.endLine;
-      const segs = [];
-      for (const hunk of file.hunks) {
-        const lines = hunk.lines.filter((l) =>
-          (l.type === 'add' || l.type === 'del') &&
-          (inRange(l.newLine) || inRange(l.oldLine)));
-        if (lines.length) segs.push({ hunk, lines });
-      }
-      return segs;
-    };
-
-    const dispatchClassSelection = () => {
-      if (!classSel.size) return;
-      const segments = [];
-      for (const { file, cls } of classSel.values()) {
-        for (const seg of classChangedLines(file, cls)) {
-          segments.push({
-            file,
-            classInfo: cls,
-            hunk: {
-              header: `${classLabel(cls)} · ${file.path}:${cls.startLine}-${cls.endLine}`,
-              lines: seg.hunk.lines,
-            },
-            lines: seg.lines,
-          });
-        }
-      }
-      if (!segments.length) return;
-      state.selectedLine = { classSelection: true, segments };
-      bus.dispatchEvent(new CustomEvent('line:select', { detail: state.selectedLine }));
-    };
-
-    const toggleClass = (file, c, chip) => {
-      const key = classKey(file, c);
-      if (classSel.has(key)) {
-        classSel.delete(key);
-        chip.classList.remove('active');
-      } else {
-        classSel.set(key, { file, cls: c });
-        chip.classList.add('active');
-      }
-      dispatchClassSelection();
-    };
-
-    const readAllBtn = el('button', { class: 'btn stat-read-all', type: 'button' }, '全部已读');
-    readAllBtn.addEventListener('click', () => {
-      const files = state.changes ? state.changes.files : [];
-      if (readSet.size >= files.length) readSet.clear();
-      else files.forEach((f) => readSet.add(f.path));
-      renderFileList(state.changes);
-      updateReadStat();
-    });
-
-    const updateReadStat = () => {
-      const total = state.changes ? state.changes.files.length : 0;
-      if (readStatEl) readStatEl.textContent = `已读 ${readSet.size}/${total}`;
-      readAllBtn.textContent = total && readSet.size >= total ? '清零' : '全部已读';
-      readAllBtn.style.display = total ? '' : 'none';
-    };
-
-    const renderStats = (changes) => {
-      const files = changes.files;
-      const classCount = files.reduce(
-        (n, f) => n + f.classes.filter((c) => c.changed).length, 0);
-      let add = 0, del = 0;
-      for (const f of files)
-        for (const h of f.hunks)
-          for (const l of h.lines) {
-            if (l.type === 'add') add++;
-            else if (l.type === 'del') del++;
-          }
-      statsBar.textContent = '';
-      statsBar.appendChild(el('span', { class: 'stat-item' }, `共 ${files.length} 个文件改动`));
-      statsBar.appendChild(el('span', { class: 'stat-item' }, `${classCount} 个类/函数受影响`));
-      statsBar.appendChild(el('span', { class: 'stat-item stat-add' }, `+${add}`));
-      statsBar.appendChild(el('span', { class: 'stat-item stat-del' }, `-${del}`));
-      readStatEl = el('span', { class: 'stat-item stat-read' }, `已读 ${readSet.size}/${files.length}`);
-      statsBar.appendChild(readStatEl);
-      statsBar.appendChild(readAllBtn);
-      updateReadStat();
-      statsBar.appendChild(el('span', { class: 'stat-item stat-hint' },
-        '点击改动行 AI 解析 · 拖动或 ⌥+点击框选多行 · 点击类名按类解析'));
-    };
-
-    // ---------- 基准选择 ----------
-    const rebuildBaseOptions = () => {
-      baseSelect.textContent = '';
-      baseSelect.appendChild(el('option', { value: '', text: '未提交改动' }));
-      for (const name of branchInfo.branches) {
-        baseSelect.appendChild(el('option', {
-          value: name,
-          text: name === branchInfo.current ? `${name} ✓` : name,
-        }));
-      }
-      // 自定义 ref 不在分支列表中时单独展示
-      const known = ['', ...branchInfo.branches];
-      if (state.base && !known.includes(state.base)) {
-        baseSelect.appendChild(el('option', { value: state.base, text: state.base }));
-      }
-      baseSelect.appendChild(el('option', { value: CUSTOM_BASE, text: '自定义…' }));
-      baseSelect.appendChild(el('option', { value: COMMITS_BASE, text: '按提交选择…' }));
-      baseSelect.value = state.base || '';
-    };
-
-    const refreshBranches = async () => {
-      if (!state.folder || typeof api.getBranches !== 'function') {
-        branchInfo = { current: '', branches: [] };
-        rebuildBaseOptions();
-        return;
-      }
-      try {
-        branchInfo = await api.getBranches(state.folder);
-      } catch {
-        branchInfo = { current: '', branches: [] };
-      }
-      rebuildBaseOptions();
-    };
-
-    let switchingBase = false;
-    const applyChanges = async (options, baseLabel, failPrefix) => {
-      switchingBase = true;
-      baseSelect.disabled = true;
-      try {
-        const result = await api.getChanges(state.folder, options);
-        state.base = baseLabel;
-        state.changes = result;
-        state.changesFp = ctx.changesFingerprint(result);
-        state.selectedFile = null;
-        state.selectedLine = null;
-        bus.dispatchEvent(new CustomEvent('changes:loaded', { detail: result }));
-      } catch (err) {
-        toast(`${failPrefix}：${errText(err)}`, 'error');
-      } finally {
-        switchingBase = false;
-        baseSelect.disabled = false;
-        rebuildBaseOptions();
-      }
-    };
-    const applyBase = async (base) => {
-      if (base === '') base = null;
-      await applyChanges({ base }, base, '切换基准失败');
-    };
-    const applyCommits = async (shas) => {
-      const label = shas.length === 1 ? `提交 ${shas[0].slice(0, 7)}` : `${shas.length} 个提交`;
-      await applyChanges({ commits: shas }, label, '加载提交改动失败');
-    };
-
-    // 提交选择器：勾选若干 commit 查看它们的改动
-    const openCommitPicker = async () => {
-      rebuildBaseOptions(); // 先回退下拉显示
-      let commits = [];
-      try {
-        commits = await api.getCommits(state.folder);
-      } catch (err) {
-        toast('获取提交列表失败：' + errText(err), 'error');
-        return;
-      }
-      if (!commits.length) {
-        toast('该仓库没有提交记录', 'error');
-        return;
-      }
-      const overlay = el('div', { class: 'modal-overlay' });
-      const panel = el('div', { class: 'commit-modal' });
-      panel.appendChild(el('div', { class: 'commit-modal-title' }, '选择要查看的提交（可多选）'));
-      const list = el('div', { class: 'commit-list' });
-      const selected = new Set();
-      const countEl = el('span', { class: 'commit-count' }, '已选 0 个');
-      for (const c of commits) {
-        const row = el('label', { class: 'commit-row' });
-        const cb = el('input', { type: 'checkbox' });
-        cb.addEventListener('change', () => {
-          if (cb.checked) selected.add(c.sha);
-          else selected.delete(c.sha);
-          countEl.textContent = `已选 ${selected.size} 个`;
-        });
-        const main = el('div', { class: 'commit-main' });
-        main.appendChild(el('div', { class: 'commit-subject' }, c.subject));
-        main.appendChild(el('div', { class: 'commit-meta' },
-          `${c.short} · ${c.author} · ${c.date}`));
-        row.appendChild(cb);
-        row.appendChild(main);
-        list.appendChild(row);
-      }
-      const footer = el('div', { class: 'commit-modal-footer' });
-      const cancelBtn = el('button', { class: 'btn', type: 'button' }, '取消');
-      const okBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '确定');
-      footer.appendChild(countEl);
-      footer.appendChild(cancelBtn);
-      footer.appendChild(okBtn);
-      panel.appendChild(list);
-      panel.appendChild(footer);
-      overlay.appendChild(panel);
-      const close = () => overlay.remove();
-      overlay.addEventListener('click', (ev) => {
-        if (ev.target === overlay) close();
-      });
-      cancelBtn.addEventListener('click', close);
-      okBtn.addEventListener('click', () => {
-        if (!selected.size) {
-          close();
-          return;
-        }
-        // git log 为新→旧，按时间正序传入让合并 diff 更自然
-        const shas = commits.filter((c) => selected.has(c.sha)).map((c) => c.sha).reverse();
-        close();
-        applyCommits(shas);
-      });
-      document.body.appendChild(overlay);
-    };
-
-    // Electron 不支持 window.prompt，自定义基准用内联输入
-    const showCustomBaseInput = () => {
-      baseSelect.style.display = 'none';
-      customBaseInput.style.display = '';
-      customBaseInput.value = state.base || '';
-      customBaseInput.focus();
-    };
-    const hideCustomBaseInput = (revert) => {
-      customBaseInput.style.display = 'none';
-      baseSelect.style.display = '';
-      if (revert) rebuildBaseOptions();
-    };
-    customBaseInput.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter') {
-        const value = customBaseInput.value.trim();
-        hideCustomBaseInput(false);
-        if (value && !switchingBase) applyBase(value);
-        else rebuildBaseOptions();
-      } else if (ev.key === 'Escape') {
-        hideCustomBaseInput(true);
-      }
-    });
-    customBaseInput.addEventListener('blur', () => {
-      if (customBaseInput.style.display !== 'none') hideCustomBaseInput(true);
-    });
-
-    baseSelect.addEventListener('change', () => {
-      if (switchingBase || !state.folder) return;
-      const base = baseSelect.value;
-      if (base === CUSTOM_BASE) {
-        showCustomBaseInput();
-        return;
-      }
-      if (base === COMMITS_BASE) {
-        openCommitPicker();
-        return;
-      }
-      applyBase(base);
-    });
+    const sourceSelector = createSourceSelector(context);
 
     // ---------- 搜索 ----------
-    const applySearchHighlight = (scrollToFirst) => {
-      diffView.querySelectorAll('.diff-line.line-match')
-        .forEach((n) => n.classList.remove('line-match'));
-      if (!searchQuery) return;
+    /** @type {import('../lib/overviewPerf.js').ChangesSearchIndex | null} */
+    let searchIndex = null;
+
+    const applySearchHighlightInScope = (rootEl, scrollToFirst) => {
+      if (!searchQuery) return null;
       /** @type {Element | null} */
       let first = null;
-      for (const content of diffView.querySelectorAll('.diff-line .line-content')) {
-        if (!content.textContent.toLowerCase().includes(searchQuery)) continue;
+      for (const content of rootEl.querySelectorAll('.diff-line .line-content')) {
+        if (!content.textContent || !content.textContent.toLowerCase().includes(searchQuery)) continue;
         const row = content.closest('.diff-line');
+        if (!row) continue;
         row.classList.add('line-match');
         if (!first) first = row;
       }
       if (scrollToFirst && first) first.scrollIntoView({ block: 'center' });
+      return first;
+    };
+
+    const applySearchHighlight = (scrollToFirst) => {
+      diffView.querySelectorAll('.diff-line.line-match')
+        .forEach((n) => n.classList.remove('line-match'));
+      if (!searchQuery) return;
+      applySearchHighlightInScope(diffView, scrollToFirst);
     };
 
     // 输入防抖：每次击键都全量重建文件列表 + 扫描 diff，大 diff 下会卡顿
@@ -407,339 +346,112 @@ export default {
       if (searchTimer) clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
         searchTimer = null;
-        searchQuery = searchInput.value.trim().toLowerCase();
-        renderFileList(state.changes);
+        const rawText = searchInput.value;
+        searchQuery = rawText.trim().toLowerCase();
+        persistProjectPatch({ searchText: rawText });
+        fileListController.renderFileList(state.changes);
         applySearchHighlight(true);
       }, 150);
     });
 
-    // ---------- 文件列表 ----------
-    /** @type {{ file: any, item: HTMLElement }[]} 当前渲染的有序文件项，供 j/k 键盘导航与 ⌘K 跳转复用 */
-    let fileItems = [];
-    const selectFile = (file, item) => {
-      state.selectedFile = file;
-      fileList.querySelectorAll('.file-item.active')
-        .forEach((n) => n.classList.remove('active'));
-      const node = item || (fileItems.find((x) => x.file === file) || {}).item;
-      if (node) {
-        node.classList.add('active');
-        node.scrollIntoView({ block: 'nearest' });
-      }
-      renderDiff(file);
-      applySearchHighlight(false);
-    };
-    const renderFileList = (changes) => {
-      fileList.textContent = '';
-      fileItems = [];
-      if (!changes) return;
-      changes.files.forEach((file) => {
-        if (searchQuery && !file.path.toLowerCase().includes(searchQuery)) return;
-        const isRead = readSet.has(file.path);
-        const item = el('div', { class: 'file-item' });
-        if (isRead) item.classList.add('file-read');
-        if (state.selectedFile === file) item.classList.add('active');
-        item.appendChild(el('span', { class: `status-badge status-${file.status}` },
-          STATUS_LABEL[file.status] || file.status));
-        const info = el('div', { class: 'file-item-info' });
-        const slash = file.path.lastIndexOf('/');
-        const name = slash >= 0 ? file.path.slice(slash + 1) : file.path;
-        const dir = slash >= 0 ? file.path.slice(0, slash + 1) : '';
-        info.appendChild(el('div', { class: 'file-name', title: file.path }, name));
-        if (dir) info.appendChild(el('div', { class: 'file-dir', title: file.path }, dir));
-        const changedClasses = file.classes.filter((c) => c.changed);
-        if (changedClasses.length) {
-          const chips = el('div', { class: 'file-changed-names' });
-          for (const c of changedClasses) {
-            const chip = el('button', {
-              class: 'class-chip', type: 'button', title: '点击按类解析（可多选）',
-            }, classLabel(c));
-            if (classSel.has(classKey(file, c))) chip.classList.add('active');
-            chip.addEventListener('click', (ev) => {
-              ev.stopPropagation();
-              toggleClass(file, c, chip);
-            });
-            chips.appendChild(chip);
-          }
-          info.appendChild(chips);
-        }
-        item.appendChild(info);
-        if (file.resource) {
-          item.appendChild(el('span', {
-            class: 'status-badge', title: '资源文件不参与 AI 评审',
-          }, '资源'));
-        } else {
-          const aiBtn = el('button', {
-            class: 'read-btn', type: 'button', title: '在「多角度 Review」中逐文件分析',
-          }, 'AI');
-          aiBtn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            state.pendingAnalyzeFile = file;
-            bus.dispatchEvent(new CustomEvent('file:analyze'));
-          });
-          item.appendChild(aiBtn);
-        }
-        const readBtn = el('button', { class: 'read-btn', type: 'button' },
-          isRead ? '取消已读' : '已读');
-        readBtn.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          if (readSet.has(file.path)) readSet.delete(file.path);
-          else readSet.add(file.path);
-          const nowRead = readSet.has(file.path);
-          item.classList.toggle('file-read', nowRead);
-          readBtn.textContent = nowRead ? '取消已读' : '已读';
-          updateReadStat();
-        });
-        item.appendChild(readBtn);
-        item.addEventListener('click', () => {
-          selectFile(file, item);
-        });
-        fileItems.push({ file, item });
-        fileList.appendChild(item);
-      });
-    };
+    const fileListController = createFileList(context);
 
-    // ---------- diff 视图 ----------
-    const renderDiff = (file) => {
-      // 同一文件重渲染时保留滚动位置和选中行（按 clickableRows 中的 pos）；
-      // 按 path 判断，changes:loaded 后 file 对象已换新但仍是同一文件
-      const sameFile = lastDiffFile != null && lastDiffFile.path === file.path;
-      const savedScroll = sameFile ? diffView.scrollTop : 0;
-      /** @type {number | null} */
-      let savedPos = null;
-      if (sameFile) {
-        const idx = lastDiffRows.findIndex((r) => r.row.classList.contains('line-selected'));
-        if (idx >= 0) savedPos = idx;
-      }
-      diffView.textContent = '';
-      if (!file.hunks.length) {
-        diffView.appendChild(emptyState('该文件没有可展示的 diff 内容'));
-        lastDiffFile = file;
-        lastDiffRows = [];
-        updateCollapseAllBtn();
-        return;
-      }
-      const clickableRows = [];
-      file.hunks.forEach((hunk, hunkIndex) => {
-        const key = `${file.path}#${hunkIndex}`;
-        const hunkBox = el('div', { class: 'diff-hunk' });
-        if (collapsed.has(key)) hunkBox.classList.add('hunk-collapsed');
-        const header = el('div', { class: 'hunk-header' });
-        const arrow = el('span', { class: 'hunk-arrow' }, collapsed.has(key) ? '▸' : '▾');
-        header.appendChild(arrow);
-        header.appendChild(document.createTextNode(' ' + hunk.header));
-        header.addEventListener('click', () => {
-          if (collapsed.has(key)) collapsed.delete(key);
-          else collapsed.add(key);
-          const nowCollapsed = collapsed.has(key);
-          hunkBox.classList.toggle('hunk-collapsed', nowCollapsed);
-          arrow.textContent = nowCollapsed ? '▸' : '▾';
-          updateCollapseAllBtn();
-        });
-        hunkBox.appendChild(header);
-        const table = el('div', { class: 'diff-lines' });
-        hunk.lines.forEach((line, lineIndex) => {
-          const row = el('div', { class: `diff-line line-${line.type}` });
-          // 行定位信息挂 dataset，行级交互由 diffView 上的事件委托统一处理（见文件底部）
-          row.dataset.lref = `${hunkIndex}:${lineIndex}`;
-          const lineNoCell = (text) => el('span', {
-            class: 'line-no line-no-copy', title: '点击复制该行',
-          }, text);
-          row.appendChild(lineNoCell(line.oldLine == null ? '' : String(line.oldLine)));
-          row.appendChild(lineNoCell(line.newLine == null ? '' : String(line.newLine)));
-          row.appendChild(el('span', { class: 'line-content' }, line.content));
-          if (line.type === 'add' || line.type === 'del') {
-            row.classList.add('line-clickable');
-            row.dataset.cpos = String(clickableRows.length);
-            clickableRows.push({ row, hunkIndex, line, lineIndex });
-          }
-          table.appendChild(row);
-        });
-        hunkBox.appendChild(table);
-        diffView.appendChild(hunkBox);
-      });
+    const diffController = createDiffView(context);
 
-      // 恢复重渲染前的滚动位置和选中行
-      diffView.scrollTop = savedScroll;
-      if (savedPos != null && savedPos < clickableRows.length) {
-        clickableRows[savedPos].row.classList.add('line-selected');
+    const syncFromProjectWorkspace = (folder) => {
+      if (!workspaceState || !folder) {
+        readMarkers = {};
+        collapsedHunks = {};
+        scrollPositions = {};
+        searchInput.value = '';
+        searchQuery = '';
+        return null;
       }
-      lastDiffFile = file;
-      lastDiffRows = clickableRows;
-      updateCollapseAllBtn();
+      const ws = workspaceState.getProject(folder);
+      readMarkers = { ...(ws.readMarkers || {}) };
+      collapsedHunks = {};
+      for (const [k, v] of Object.entries(ws.collapsedHunks || {})) {
+        if (Array.isArray(v)) collapsedHunks[k] = [...v];
+      }
+      scrollPositions = { ...(ws.scrollPositions || {}) };
+      searchInput.value = ws.searchText || '';
+      searchQuery = (ws.searchText || '').trim().toLowerCase();
+      return ws;
     };
 
     const render = () => {
+      let restoredSelectedPath = null;
       if (state.folder !== knownFolder) {
         knownFolder = state.folder;
-        readSet.clear();
-        classSel.clear();
-        collapsed = new Set();
-        refreshBranches();
+        selection.classSel.clear();
+        pendingSelection = null;
+        state.selAnchor = null;
+        const ws = syncFromProjectWorkspace(state.folder);
+        restoredSelectedPath = ws ? ws.selectedFilePath : null;
+        sourceSelector.refreshBranches();
       }
+      sourceSelector.rebuildBaseOptions();
       const changes = state.changes;
+      searchIndex = changes ? buildChangesSearchIndex(changes) : null;
       if (!changes) {
         showEmpty('请先选择项目文件夹', '点击左下角「选择项目」开始', true);
         return;
       }
+      const paths = new Set(changes.files.map((file) => file.path));
+      const selectedLine = state.selectedLine;
+      if (selectedLine && (
+        (selectedLine.file && !paths.has(selectedLine.file.path)) ||
+        (selectedLine.segments && selectedLine.segments.some((seg) =>
+          seg.file && !paths.has(seg.file.path)))
+      )) state.selectedLine = null;
+      if (pendingSelection && (
+        (pendingSelection.file && !paths.has(pendingSelection.file.path)) ||
+        (pendingSelection.segments && pendingSelection.segments.some((seg) =>
+          seg.file && !paths.has(seg.file.path)))
+      )) {
+        pendingSelection = null;
+      }
+
+      const currentPath = (state.selectedFile && state.selectedFile.path)
+        || restoredSelectedPath
+        || (workspaceState && state.folder ? workspaceState.getProject(state.folder).selectedFilePath : null);
+      const file = changes.files.find((f) => f.path === currentPath)
+        || changes.files[0] || null;
+      state.selectedFile = file;
+      if (file) {
+        persistProjectPatch({ selectedFilePath: file.path });
+      }
+      stats.renderSemanticsNote(changes);
+      stats.renderLimitsBanner(changes);
       if (!changes.files.length) {
-        showEmpty(state.base ? '该基准下没有改动' : '当前没有未提交的改动',
-          state.base ? '换个基准试试，或回到「未提交改动」' : '工作区当前是干净的');
+        const hasModeOrBase = Boolean(state.base || WORKTREE_MODES.has(state.sourceMode));
+        showEmpty(hasModeOrBase ? '该基准下没有改动' : '当前没有未提交的改动',
+          hasModeOrBase ? '换个基准试试，或回到「未提交改动」' : '工作区当前是干净的');
         return;
       }
       statsBar.style.display = '';
       toolbar.style.display = '';
       body.style.display = '';
       emptyHost.style.display = 'none';
-      renderStats(changes);
-      const file = state.selectedFile && changes.files.includes(state.selectedFile)
-        ? state.selectedFile
-        : changes.files[0];
-      state.selectedFile = file;
-      renderFileList(changes);
-      renderDiff(file);
+      stats.renderStats(changes);
+      fileListController.renderFileList(changes);
+      diffController.renderDiff(file);
       applySearchHighlight(false);
     };
 
     showEmpty(state.folder ? '当前没有未提交的改动' : '请先选择项目文件夹',
       state.folder ? '工作区当前是干净的' : '点击左下角「选择项目」开始', !state.folder);
-    rebuildBaseOptions();
+    sourceSelector.rebuildBaseOptions();
     bus.addEventListener('changes:loaded', render);
-
-    // ⌘K 面板「跳转文件」：选中文件、渲染 diff、滚动到列表项
-    bus.addEventListener('file:jump', (ev) => {
-      const path = ev.detail;
-      const entry = fileItems.find((x) => x.file.path === path);
-      if (entry) selectFile(entry.file, entry.item);
+    bus.addEventListener('project:changed', () => {
+      selection.clearAllSelection();
+      diffController.renderDiff(null);
+      render();
     });
 
-    // ---------- diff 行交互：事件委托（替代每行 4~6 个监听器，大 diff 下数万监听器）----------
-    // 行定位信息在渲染时写入 dataset：lref=hunkIndex:lineIndex（复制用），cpos=clickableRows 下标（选择用）
-    const clearSelected = () => {
-      diffView.querySelectorAll('.diff-line.line-selected')
-        .forEach((n) => n.classList.remove('line-selected'));
-    };
-    const highlightRange = (a, b) => {
-      clearSelected();
-      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) {
-        lastDiffRows[i].row.classList.add('line-selected');
-      }
-    };
-    const dispatchRange = (a, b) => {
-      const file = lastDiffFile;
-      if (!file) return;
-      const picked = lastDiffRows.slice(Math.min(a, b), Math.max(a, b) + 1);
-      highlightRange(a, b);
-      const segments = [];
-      for (const r of picked) {
-        let seg = segments.find((s) => s.hunkIndex === r.hunkIndex);
-        if (!seg) {
-          seg = { hunkIndex: r.hunkIndex, hunk: file.hunks[r.hunkIndex], lines: [] };
-          segments.push(seg);
-        }
-        seg.lines.push(r.line);
-      }
-      const detail = { file, segments };
-      state.selectedLine = detail;
-      bus.dispatchEvent(new CustomEvent('line:select', { detail }));
-    };
-    const dispatchSingle = (r) => {
-      clearSelected();
-      r.row.classList.add('line-selected');
-      const detail = { file: lastDiffFile, hunkIndex: r.hunkIndex, line: r.line, lineIndex: r.lineIndex };
-      state.selectedLine = detail;
-      bus.dispatchEvent(new CustomEvent('line:select', { detail }));
-    };
+    createNavigation(context);
 
-    /** @type {{ start: number, end: number, alt: boolean } | null} */
-    let drag = null;
-    window.addEventListener('blur', () => { drag = null; }); // 窗口外松开鼠标时取消拖选
+    createLineInteraction(context);
 
-    diffView.addEventListener('mousedown', (ev) => {
-      if (ev.button !== 0) return;
-      const target = /** @type {HTMLElement | null} */ (ev.target);
-      if (target && target.closest('.line-no-copy')) return; // 行号列负责复制，不触发选择
-      const rowEl = /** @type {HTMLElement | null} */ (target && target.closest('.diff-line'));
-      if (!rowEl || rowEl.dataset.cpos == null || !lastDiffFile) return;
-      ev.preventDefault(); // 阻止浏览器原生文字选中
-      const pos = Number(rowEl.dataset.cpos);
-      const file = lastDiffFile;
-      drag = { start: pos, end: pos, alt: ev.altKey };
-      highlightRange(pos, pos);
-      const onUp = () => {
-        document.removeEventListener('mouseup', onUp);
-        if (!drag) return;
-        const { start, end, alt } = drag;
-        drag = null;
-        if (end !== start) {
-          state.selAnchor = { file, pos: start };
-          dispatchRange(start, end);
-        } else if (alt && state.selAnchor && state.selAnchor.file === file) {
-          dispatchRange(state.selAnchor.pos, start);
-        } else {
-          state.selAnchor = { file, pos: start };
-          dispatchSingle(lastDiffRows[start]);
-        }
-      };
-      document.addEventListener('mouseup', onUp);
-    });
-
-    diffView.addEventListener('mouseover', (ev) => {
-      if (!drag) return;
-      const target = /** @type {HTMLElement | null} */ (ev.target);
-      const rowEl = /** @type {HTMLElement | null} */ (target && target.closest('.diff-line'));
-      if (!rowEl || rowEl.dataset.cpos == null) return;
-      const pos = Number(rowEl.dataset.cpos);
-      if (pos !== drag.end) {
-        drag.end = pos;
-        highlightRange(drag.start, pos);
-      }
-    });
-
-    // 行号列点击复制该行内容
-    diffView.addEventListener('click', (ev) => {
-      const target = /** @type {HTMLElement | null} */ (ev.target);
-      const cell = /** @type {HTMLElement | null} */ (target && target.closest('.line-no-copy'));
-      if (!cell || !lastDiffFile) return;
-      const rowEl = cell.closest('.diff-line');
-      if (!(rowEl instanceof HTMLElement) || !rowEl.dataset.lref) return;
-      const [hunkIndex, lineIndex] = rowEl.dataset.lref.split(':').map(Number);
-      const line = lastDiffFile.hunks[hunkIndex] && lastDiffFile.hunks[hunkIndex].lines[lineIndex];
-      if (!line) return;
-      navigator.clipboard.writeText(line.content)
-        .then(() => { if (toast) toast('已复制该行'); })
-        .catch(() => { /* 剪贴板不可用时静默 */ });
-    });
-
-    // 键盘流：j/k 上下移动文件、⌘F 聚焦搜索（仅本 tab 可见且不在输入框打字时）
-    document.addEventListener('keydown', (ev) => {
-      if (container.hidden) return;
-      const t = /** @type {HTMLElement | null} */ (ev.target);
-      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-      if (ev.metaKey && !ev.shiftKey && !ev.altKey && !ev.ctrlKey && ev.key === 'f') {
-        ev.preventDefault();
-        searchInput.focus();
-        searchInput.select();
-        return;
-      }
-      if (typing || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-      if (ev.key !== 'j' && ev.key !== 'k') return;
-      if (!fileItems.length) return;
-      ev.preventDefault();
-      const idx = fileItems.findIndex((x) => x.file === state.selectedFile);
-      const next = ev.key === 'j'
-        ? Math.min(fileItems.length - 1, (idx < 0 ? -1 : idx) + 1)
-        : Math.max(0, (idx < 0 ? fileItems.length : idx) - 1);
-      selectFile(fileItems[next].file, fileItems[next].item);
-    });
-
-    // 搜索框内 Esc：清空并失焦
-    searchInput.addEventListener('keydown', (ev) => {
-      if (ev.key !== 'Escape') return;
-      if (searchInput.value) {
-        searchInput.value = '';
-        searchInput.dispatchEvent(new Event('input'));
-      }
-      searchInput.blur();
-    });
   },
 };
