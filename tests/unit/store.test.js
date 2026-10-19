@@ -107,4 +107,117 @@ test('存储文件损坏时回退默认值', () => {
   assert.deepStrictEqual(store.getRecentProjects(), []);
   fs.writeFileSync(path.join(tmpDir, 'review-history.json'), 'not json', 'utf8');
   assert.deepStrictEqual(store.listReviews('/r/a'), []);
+  fs.writeFileSync(path.join(tmpDir, 'review-checklist.json'), '{broken checklist', 'utf8');
+  assert.deepStrictEqual(store.listChecklist('/r/a'), []);
+  store.addRecentProject('/recovered');
+  store.saveReview({ folder: '/recovered', markdown: 'new' });
+  store.saveChecklist('/recovered', []);
+  for (const [file, content] of [
+    ['recent-projects.json', '{bad json'],
+    ['review-history.json', 'not json'],
+    ['review-checklist.json', '{broken checklist'],
+  ]) {
+    const backups = fs.readdirSync(tmpDir).filter((name) => name.startsWith(`${file}.corrupt-`));
+    assert.strictEqual(backups.length, 1);
+    assert.strictEqual(fs.readFileSync(path.join(tmpDir, backups[0]), 'utf8'), content);
+  }
+});
+
+test('v1 惰性迁移保留字段，缺 ID 稳定，不立即改写文件', () => {
+  const file = path.join(tmpDir, 'review-checklist.json');
+  const raw = JSON.stringify({ '/legacy': [{ text: 'src/a.js:12 空数组', status: 'wontfix', createdAt: 123 }] });
+  fs.writeFileSync(file, raw);
+  const item = store.listChecklist('/legacy')[0];
+  assert.strictEqual(item.schemaVersion, 2);
+  assert.strictEqual(item.updatedAt, 123);
+  assert.strictEqual(item.category, '其他');
+  assert.strictEqual(item.severity, null);
+  assert.strictEqual(item.dismissal, null);
+  assert.strictEqual(item.location.path, 'src/a.js');
+  assert.strictEqual(store.listChecklist('/legacy')[0].id, item.id);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), raw);
+});
+
+test('兼容保存不丢 v2 字段，状态乐观锁拒绝旧版本', () => {
+  const item = { id: 'v2', text: '问题', severity: '高', category: '安全', createdAt: 1, updatedAt: 2, lastSeenReviewId: 'r' };
+  store.saveChecklist('/v2', [item]);
+  const saved = store.saveChecklist('/v2', [{ id: 'v2', text: '问题', status: 'fixed' }])[0];
+  assert.strictEqual(saved.severity, '高');
+  assert.strictEqual(saved.lastSeenReviewId, 'r');
+  assert.throws(() => store.setChecklistStatus({ folder: '/v2', id: 'v2', status: 'pending', expectedUpdatedAt: 1 }), /已更新/);
+  assert.strictEqual(store.setChecklistStatus({ folder: '/v2', id: 'v2', status: 'pending', expectedUpdatedAt: 2 })[0].status, 'pending');
+});
+
+test('清单容量不静默丢弃活动问题，优先移除最旧终态', () => {
+  const items = Array.from({ length: 201 }, (_, i) => ({ id: `cap${i}`, text: `问题${i}`, status: 'pending', createdAt: i }));
+  assert.throws(() => store.saveChecklist('/active-cap', items), /200/);
+  items[0].status = 'fixed';
+  const result = store.saveChecklist('/active-cap', items);
+  assert.strictEqual(result.length, 200);
+  assert.strictEqual(result.some((f) => f.id === 'cap0'), false);
+});
+
+test('明确 dismissal 事件独立保存，旧式不处理不追溯计数，事件和建议有上限', () => {
+  store.saveChecklist('/events', ['a', 'b', 'c'].map((id) => ({ id, text: '空账户列表访问首项导致崩溃', createdAt: 1, category: '正确性' })));
+  store.setChecklistStatus({ folder: '/events', id: 'a', status: 'wontfix' });
+  assert.strictEqual(store.getDismissals('/events').events.length, 0);
+  for (const id of ['a', 'b', 'c']) store.setChecklistStatus({ folder: '/events', id, status: 'wontfix', dismissal: { reason: 'intentional', note: '' } });
+  assert.strictEqual(store.getDismissals('/events').events.length, 3);
+  assert.strictEqual(store.getDismissals('/events').suggestions.length, 1);
+  store.saveChecklist('/events', []);
+  assert.strictEqual(store.getDismissals('/events').events.length, 3);
+  store.saveDismissals('/caps', { events: Array.from({ length: 501 }, (_, i) => ({ id: i })), suggestions: Array.from({ length: 101 }, (_, i) => ({ id: i })) });
+  assert.strictEqual(store.getDismissals('/caps').events.length, 500);
+  assert.strictEqual(store.getDismissals('/caps').suggestions.length, 100);
+});
+
+test('有效 JSON 的非法容器不被覆盖', () => {
+  const file = path.join(tmpDir, 'review-checklist.json');
+  fs.writeFileSync(file, '[]');
+  assert.throws(() => store.saveChecklist('/invalid', []), /结构无效/);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), '[]');
+});
+
+test('历史 v1 默认值和稳定逻辑 ID upsert', () => {
+  fs.writeFileSync(path.join(tmpDir, 'review-history.json'), JSON.stringify({ '/old': [{ id: 'old', kind: 'unknown-kind', createdAt: 7, markdown: '原文', stats: { sectionFeedback: { 安全: 1 } } }] }));
+  const old = store.listReviews('/old')[0];
+  assert.strictEqual(old.updatedAt, 7);
+  assert.strictEqual(old.pinned, false);
+  assert.strictEqual(old.provenance, null);
+  assert.deepStrictEqual(old.findings, []);
+  assert.strictEqual(old.kind, 'unknown-kind');
+  store.saveReview({ folder: '/upsert', id: 'logical', markdown: '一' });
+  store.saveReview({ folder: '/upsert', id: 'logical', markdown: '二' });
+  assert.strictEqual(store.listReviews('/upsert').length, 1);
+  assert.strictEqual(store.listReviews('/upsert')[0].markdown, '二');
+});
+
+test('固定记录豁免20条限制，取消固定重新应用保留策略', () => {
+  const folder = '/pins';
+  const first = store.saveReview({ folder, markdown: '最早' });
+  store.setReviewPinned({ folder, id: first.id, pinned: true });
+  for (let i = 0; i < 22; i++) store.saveReview({ folder, title: `新${i}` });
+  assert.strictEqual(store.listReviews(folder).length, 21);
+  assert.strictEqual(store.listReviews(folder)[0].id, first.id);
+  store.setReviewPinned({ folder, id: first.id, pinned: false });
+  assert.strictEqual(store.listReviews(folder).length, 20);
+  assert.strictEqual(store.getReview({ folder, id: first.id }), null);
+});
+test('重命名保留来源日期，字面搜索包含路径和模型，删除幂等', () => {
+  const folder = '/manage';
+  const provenance = { files: [{ path: 'Src/[a].js' }], backends: [{ backend: 'codex', resolvedModel: 'GPT-test' }] };
+  const perModel = [{ slotId: 'syn', role: 'synthesizer', backend: 'codex', model: 'GPT-test', effort: 'high', outcome: 'partial', markdown: '原始', error: '故障', stats: { sectionFeedback: 1 } }];
+  const entry = store.saveReview({ folder, markdown: '报告', provenance, perModel });
+  const renamed = store.renameReview({ folder, id: entry.id, title: ' 新标题 ' });
+  assert.strictEqual(renamed.title, '新标题');
+  assert.strictEqual(renamed.createdAt, entry.createdAt);
+  assert.ok(renamed.updatedAt > entry.updatedAt);
+  assert.deepStrictEqual(renamed.provenance, provenance);
+  assert.deepStrictEqual(store.getReview({ folder, id: entry.id }).perModel, perModel);
+  for (const query of ['新标题', '报告', '[A].JS', 'gpt-TEST', 'CODEX']) assert.strictEqual(store.listReviews(folder, { query }).length, 1);
+  assert.strictEqual(store.listReviews(folder, { query: '.*' }).length, 0);
+  assert.strictEqual(store.listReviews(folder, { kind: 'full' }).length, 0);
+  for (const title of ['', ' ', 'x'.repeat(201), null]) assert.throws(() => store.renameReview({ folder, id: entry.id, title }), /标题/);
+  assert.deepStrictEqual(store.deleteReview({ folder, id: entry.id }), { deleted: true });
+  assert.deepStrictEqual(store.deleteReview({ folder, id: entry.id }), { deleted: false });
 });
