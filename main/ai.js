@@ -3,6 +3,7 @@ const { getSettings } = require('./settings');
 const { readKimiConfig, readCodexConfig } = require('./cliConfig');
 const {
   getRuns,
+  getRunPrompt,
   getCurrentRun,
   pauseRun,
   cancelRun,
@@ -12,6 +13,7 @@ const {
   resolveLane,
   maybeCleanupLane,
   touchLane,
+  cancelledError,
 } = require('./ai/runControl');
 const { cliCmdLabel, chatViaCli, listOpencodeModels, listCodexModels } = require('./ai/cli');
 const { chatViaApi } = require('./ai/backends');
@@ -149,7 +151,8 @@ async function resumeRun(runId) {
   const state = lane && lane.pausedState;
   if (!state) return null;
   lane.pausedState = null;
-  const cfg = await getSettings();
+  // 多模型子跑道续跑时必须沿用该模型的配置，不能回退到当前设置
+  const cfg = state.cfg || (await getSettings());
   lane.batchRunActive = true;
   try {
     if (state.kind === 'full') {
@@ -204,8 +207,10 @@ const LEGACY_CHECK_SECTION =
 
 // 整体分析分批循环：每批开始前检查暂停请求，暂停时保存续跑状态并返回已完成部分；
 // 正常跑完后多批结果再综合（续跑走到这里同样执行综合）
+// state.runLabel 可选：多模型评审时用于在运行详情中区分各模型跑道
 async function runOverviewBatches(cfg, state) {
   const { folder, batches, system, runId } = state;
+  const runKind = state.runLabel || '整体分析';
   const lane = ensureLane(runId);
   const planPrefix = state.planContext ? `${state.planContext}\n\n` : '';
   // 遗留问题清单放在用户消息开头，让各批与综合都能看到
@@ -230,7 +235,7 @@ async function runOverviewBatches(cfg, state) {
     const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: system },
       { role: 'user', content: user },
-    ], { maxTokens: 4096, folder, kind: '整体分析', batch: label, batchIndex: i + 1, batchTotal: batches.length, runId, stream: true });
+    ], { maxTokens: 4096, folder, kind: runKind, batch: label, batchIndex: i + 1, batchTotal: batches.length, runId, stream: true });
     state.batchResults.push(content);
     state.statsList.push(stats);
     state.nextIndex = i + 1;
@@ -256,7 +261,7 @@ async function runOverviewBatches(cfg, state) {
       const { content, stats } = await chatWithStats(cfg, [
       { role: 'system', content: synthSystem },
       { role: 'user', content: `${pendingPrefix}${planPrefix}${prevPrefix}${combined}` },
-    ], { maxTokens: 4096, folder, kind: '整体分析', batch: '（综合结果）', batchIndex: batches.length, batchTotal: batches.length, runId, stream: true });
+    ], { maxTokens: 4096, folder, kind: runKind, batch: '（综合结果）', batchIndex: batches.length, batchTotal: batches.length, runId, stream: true });
     markdown = content;
     state.statsList.push(stats);
   }
@@ -271,12 +276,10 @@ function skipResources(files) {
   return files.filter((f) => !(f && f.resource));
 }
 
-async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '', planContext = '', pendingIssues = [], customDimensionsOverride = '', previousReview = '' }) {
-  files = skipResources(files);
-  if (!Array.isArray(files) || files.length === 0) {
-    throw new Error('没有可分析的改动');
-
-  }
+// 整体分析的公共上下文：设置覆盖、system prompt、分批、遗留问题/上次对比前缀。
+// analyzeOverview 与 analyzeOverviewMulti 共用，保证单模型/多模型 prompt 完全一致
+/** @param {any} opts */
+async function prepareOverview({ folder, files, customPromptOverride = '', planContext = '', pendingIssues = [], customDimensionsOverride = '', previousReview = '' }) {
   let cfg = applyPromptOverride(await getSettings(), customPromptOverride);
   // 评审预设：本次生效的自定义维度覆盖（不写回设置）
   if (typeof customDimensionsOverride === 'string' && customDimensionsOverride.trim()) {
@@ -298,33 +301,179 @@ async function analyzeOverview({ folder, files, runId = null, customPromptOverri
       '说明上次指出的问题本次是否已修复、哪些仍存在、本次改动新引入了什么问题。'
     : '';
   const { batches, reviewed } = splitIntoBatches(folder, files);
-  runId = ensureRunId(runId);
-  const state = {
-    kind: 'overview',
-    folder,
-    files,
+  return {
+    cfg,
     system: withProjectRules(withCustomPrompt(buildOverviewSystem(cfg, Boolean(plan)), cfg), folder) + issueSuffix + prevSuffix,
-    planContext: plan,
+    issueSuffix,
+    prevSuffix,
+    plan,
     prevText: prev
       ? `上次评审的结论（供对比参考，不需要复述它）：\n${prev.length > 8000 ? `${prev.slice(0, 8000)}\n（过长已截断）` : prev}`
       : '',
     pendingText: pending.length
       ? `上次评审遗留的待处理问题（请在「遗留问题核对」节逐条核对当前 diff 是否已修复）：\n${pending.map((t, i) => `${i + 1}. ${t}`).join('\n')}`
       : '',
+    batches,
+    reviewed,
+  };
+}
+
+async function analyzeOverview({ folder, files, runId = null, customPromptOverride = '', planContext = '', pendingIssues = [], customDimensionsOverride = '', previousReview = '' }) {
+  files = skipResources(files);
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error('没有可分析的改动');
+  }
+  const ctx = await prepareOverview({ folder, files, customPromptOverride, planContext, pendingIssues, customDimensionsOverride, previousReview });
+  runId = ensureRunId(runId);
+  const state = {
+    kind: 'overview',
+    folder,
+    files,
+    cfg: ctx.cfg,
+    system: ctx.system,
+    planContext: ctx.plan,
+    prevText: ctx.prevText,
+    pendingText: ctx.pendingText,
     batchResults: [],
     statsList: [],
     nextIndex: 0,
-    batches,
-    reviewed,
+    batches: ctx.batches,
+    reviewed: ctx.reviewed,
     runId,
     pausedAt: null,
   };
   const lane = ensureLane(runId);
   lane.batchRunActive = true;
   try {
-    return await runOverviewBatches(cfg, state);
+    return await runOverviewBatches(ctx.cfg, state);
   } finally {
     lane.batchRunActive = false;
+    maybeCleanupLane(runId);
+  }
+}
+
+// 多模型评审的后端槽位与模型字段映射
+const BACKEND_LABELS = { api: 'API', opencode: 'OpenCode', kimi: 'Kimi CLI', codex: 'Codex' };
+const MODEL_FIELD_BY_BACKEND = { api: 'model', opencode: 'opencodeModel', kimi: 'kimiModel', codex: 'codexModel' };
+
+// 按槽位覆盖模型/思考强度：model 为空时沿用设置里该后端已配置的值
+function applyModelOverride(base, m) {
+  const cfg = { ...base, backend: m.backend };
+  const field = MODEL_FIELD_BY_BACKEND[m.backend];
+  if (field && typeof m.model === 'string' && m.model) cfg[field] = m.model;
+  if (typeof m.effort === 'string' && m.effort) cfg.reasoningEffort = m.effort;
+  return cfg;
+}
+
+// 多模型并行评审：每个选中模型跑完整体分析（独立子跑道，互不影响），
+// 全部结束后由指定的汇总模型合并为一份报告。单个模型失败不阻断其他模型
+/** @param {any} opts */
+async function analyzeOverviewMulti({ folder, files, models = [], synthesizer = null, runId = null, customPromptOverride = '', planContext = '', pendingIssues = [], customDimensionsOverride = '', previousReview = '' }) {
+  files = skipResources(files);
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error('没有可分析的改动');
+  }
+  const validModels = (Array.isArray(models) ? models : [])
+    .filter((m) => m && MODEL_FIELD_BY_BACKEND[m.backend])
+    .slice(0, 4);
+  if (validModels.length < 2) throw new Error('多模型评审至少需要选择 2 个模型');
+  const ctx = await prepareOverview({ folder, files, customPromptOverride, planContext, pendingIssues, customDimensionsOverride, previousReview });
+  runId = ensureRunId(runId);
+  // 主跑道只在汇总阶段登记（chatWithStats 内部）；模型阶段不标记 batchRunActive，
+  // 避免运行详情里出现长期的「批间切换」占位卡片
+  try {
+    const settled = await Promise.allSettled(validModels.map(async (m, i) => {
+      const cfg = applyModelOverride(ctx.cfg, m);
+      const label = BACKEND_LABELS[m.backend] || m.backend;
+      const subRunId = `${runId}-m${i}`;
+      const lane = ensureLane(subRunId);
+      lane.batchRunActive = true;
+      const state = {
+        kind: 'overview', folder, files, cfg,
+        system: ctx.system,
+        planContext: ctx.plan,
+        prevText: ctx.prevText,
+        pendingText: ctx.pendingText,
+        batchResults: [], statsList: [], nextIndex: 0,
+        batches: ctx.batches, reviewed: ctx.reviewed,
+        runId: subRunId, pausedAt: null,
+        runLabel: `整体分析（${label}）`,
+      };
+      try {
+        const r = await runOverviewBatches(cfg, state);
+        return { label, backend: m.backend, model: cfg[MODEL_FIELD_BY_BACKEND[m.backend]] || '', ...r };
+      } finally {
+        lane.batchRunActive = false;
+        maybeCleanupLane(subRunId);
+      }
+    }));
+    const perModel = [];
+    const parts = [];
+    settled.forEach((r, i) => {
+      const label = BACKEND_LABELS[validModels[i].backend] || validModels[i].backend;
+      if (r.status === 'fulfilled') {
+        const v = r.value;
+        perModel.push({ label, backend: v.backend, model: v.model, markdown: v.markdown, stats: v.stats });
+        let md = v.markdown;
+        if (md.length > 10000) md = `${md.slice(0, 10000)}\n（过长已截断）`;
+        parts.push(`【${label} 的评审结果】\n${md}`);
+      } else {
+        const errMsg = r.reason && r.reason.message ? r.reason.message : String(r.reason);
+        perModel.push({ label, backend: validModels[i].backend, model: validModels[i].model || '', error: errMsg });
+        parts.push(`【${label} 评审失败，未产出结果】${errMsg}`);
+      }
+    });
+    const okCount = perModel.filter((p) => p.markdown).length;
+    if (!okCount) {
+      if (settled.some((r) => r.status === 'rejected' && r.reason && r.reason.cancelled)) throw cancelledError();
+      throw new Error(`所有模型都评审失败：${perModel[0] ? perModel[0].error : '未知错误'}`);
+    }
+    // 汇总：默认用当前设置的后端；汇总流式走主跑道，渲染端可实时看到
+    const syn = synthesizer && MODEL_FIELD_BY_BACKEND[synthesizer.backend]
+      ? synthesizer
+      : { backend: ctx.cfg.backend };
+    const synCfg = applyModelOverride(ctx.cfg, syn);
+    const synSystem = withProjectRules(withCustomPrompt(
+      '你是一位资深代码评审专家。以下是对同一批代码改动由多个模型分别给出的评审结果，' +
+      `请将它们去重、合并为一份完整评审，仍${overviewSectionsText(ctx.cfg, Boolean(ctx.plan))}\n` +
+      `${ctx.issueSuffix}${ctx.prevSuffix}`,
+      ctx.cfg,
+    ), folder);
+    const planPrefix = ctx.plan ? `${ctx.plan}\n\n` : '';
+    const user = `${ctx.pendingText ? `${ctx.pendingText}\n\n` : ''}${planPrefix}${ctx.prevText ? `${ctx.prevText}\n\n` : ''}` +
+      `以下是 ${okCount} 个模型对同一批代码改动的评审结果，请合并为一份评审：\n\n${parts.join('\n\n---\n\n')}`;
+    const synMessages = [
+      { role: 'system', content: synSystem },
+      { role: 'user', content: user },
+    ];
+    const synOptions = { maxTokens: 4096, folder, kind: '多模型汇总', batch: `${okCount} 个模型`, runId, stream: true };
+    // 汇总模型自身失败时，回退到第一个成功的模型后端做汇总
+    let content;
+    let stats;
+    let fallbackNote = '';
+    try {
+      ({ content, stats } = await chatWithStats(synCfg, synMessages, synOptions));
+    } catch (err) {
+      const fallback = perModel.find((p) => p.markdown && p.backend !== syn.backend);
+      if (!fallback) throw err;
+      ({ content, stats } = await chatWithStats(
+        applyModelOverride(ctx.cfg, { backend: fallback.backend, model: fallback.model }),
+        synMessages, synOptions,
+      ));
+      const synLabel = BACKEND_LABELS[syn.backend] || syn.backend;
+      fallbackNote = `\n\n> 注：汇总模型 ${synLabel} 调用失败，已改用 ${fallback.label} 汇总。`;
+    }
+    let markdown = content + fallbackNote;
+    if (ctx.reviewed < files.length) {
+      markdown += `\n\n改动过多，仅评审了前 ${ctx.reviewed} 个文件。`;
+    }
+    if (okCount < perModel.length) {
+      const failed = perModel.filter((p) => !p.markdown).map((p) => p.label).join('、');
+      markdown += `\n\n> 注：${failed} 评审失败，未纳入汇总。`;
+    }
+    const allStats = perModel.map((p) => p.stats).filter(Boolean).concat([stats]);
+    return { markdown, stats: aggregateStats(allStats), perModel };
+  } finally {
     maybeCleanupLane(runId);
   }
 }
@@ -400,6 +549,7 @@ async function explainFull({ folder, files, runId = null, customPromptOverride =
     kind: 'full',
     folder,
     files,
+    cfg,
     system: withProjectRules(withCustomPrompt(FULL_EXPLAIN_SYSTEM, cfg), folder),
     planContext: normalizePlanContext(planContext),
     parts: [],
@@ -545,4 +695,4 @@ async function testConnection(settings) {
   }
 }
 
-module.exports = { analyzeOverview, analyzeFile, explainFull, explainChange, explainFollowUp, reviewFollowUp, generatePlan, testConnection, listModels, getRuns, getCurrentRun, setChunkSender, cancelRun, pauseRun, resumeRun, buildOverviewSystem };
+module.exports = { analyzeOverview, analyzeOverviewMulti, analyzeFile, explainFull, explainChange, explainFollowUp, reviewFollowUp, generatePlan, testConnection, listModels, getRuns, getRunPrompt, getCurrentRun, setChunkSender, cancelRun, pauseRun, resumeRun, buildOverviewSystem };

@@ -6,6 +6,7 @@
  * 暂停时保存的分批续跑状态（runOverviewBatches / runFullBatches 的循环上下文）
  * @typedef {object} PausedBatchState
  * @property {string} kind
+ * @property {any} [cfg]
  * @property {number} nextIndex
  * @property {any[][]} batches
  * @property {number} [pausedAt]
