@@ -149,6 +149,10 @@ export default {
       item.appendChild(head);
       item.appendChild(body);
       historyList.insertBefore(item, historyList.firstChild);
+      // 历史上限：长时间使用只保留最近 20 条，避免隐藏 DOM 无限累积
+      while (historyList.children.length > 20) {
+        historyList.lastElementChild.remove();
+      }
     };
 
     let requestSeq = 0;
