@@ -1,100 +1,80 @@
+import { createResultTools } from './review/resultTools.js';
+import { createToolbar } from './review/toolbar.js';
+import { createEstimate } from './review/estimate.js';
+import { createRunFlow } from './review/runFlow.js';
+import { createFileCards } from './review/fileCards.js';
+import { setStatusBox } from '../lib/statusBox.js';
+
 // 多角度 Review：整体分析 / 逐文件 / 历史 三种模式
-import { renderMarkdown, renderMarkdownPage } from '../markdown.js';
-import { createStreamPreview } from '../lib/streamPreview.js';
-import { createLoadingNode } from '../lib/loading.js';
 
-const DIMENSIONS = [
-  '改动概述', '安全性', '结构问题', '影响面',
-  '逻辑严谨性', '臃肿与冗余', '可扩展性', '可复用性',
-];
-
-// 注入 prompt 的方案长度上限，避免方案过长撑爆 prompt
-const PLAN_CONTEXT_MAX_CHARS = 6000;
-const PLAN_PRD_EXCERPT_CHARS = 500;
-
-const planReviewEnabled = () => localStorage.getItem('planReviewEnabled') !== '0';
-
-// 拉取当前项目启用的需求方案并构造注入文本；未开启、无方案或接口缺失时返回 null
-async function loadPlanContext(api, folder) {
-  if (!folder || !planReviewEnabled() || typeof api.getActivePlan !== 'function') return null;
-  /** @type {any} */
-  let plan = null;
-  try {
-    plan = await api.getActivePlan(folder);
-  } catch {
-    return null;
-  }
-  if (!plan || !plan.planMarkdown) return null;
-  let markdown = String(plan.planMarkdown);
-  if (markdown.length > PLAN_CONTEXT_MAX_CHARS) {
-    markdown = `${markdown.slice(0, PLAN_CONTEXT_MAX_CHARS)}\n\n（方案内容过长，已截断至 ${PLAN_CONTEXT_MAX_CHARS} 字）`;
-  }
-  const prdText = String(plan.prdText || '');
-  const prdExcerpt = prdText.length > PLAN_PRD_EXCERPT_CHARS
-    ? `${prdText.slice(0, PLAN_PRD_EXCERPT_CHARS)}…（PRD 过长已截断）`
-    : prdText;
-  const title = plan.title || '未命名方案';
-  let section = `## 需求方案（评审依据）\n\n方案标题：${title}\n\n${markdown}`;
-  if (prdExcerpt) section += `\n\n### PRD 摘要\n\n${prdExcerpt}`;
-  return { title, section };
-}
-
-const pad = (n) => String(n).padStart(2, '0');
-
-// ---------- 问题清单解析 ----------
-// 提取 markdown 中指定标题的小节正文（到下一个同级或更高级标题为止），找不到返回 null
-function extractSection(markdown, title) {
-  const re = new RegExp(`(?:^|\\n)#{1,6}\\s*${title}[^\\n]*\\n([\\s\\S]*?)(?=\\n#{1,6}\\s|$)`, 'i');
-  const m = String(markdown || '').match(re);
-  return m ? m[1] : null;
-}
-
-// 解析「问题清单」节：逐条提取 `- [ ] 描述`；找不到小节或写「无」时返回空数组（容错，不报错）
-function parseIssueList(markdown) {
-  const body = extractSection(markdown, '问题清单');
-  if (!body) return [];
-  const items = [];
-  const re = /^\s*[-*]\s*\[[ xX]?\]\s*(.+?)\s*$/gm;
-  let m;
-  while ((m = re.exec(body))) items.push(m[1]);
-  return items;
-}
-
-// 解析「遗留问题核对」节：`旧问题描述 => 已修复 / 仍存在 / 部分修复（说明）`
-function parseLegacyCheck(markdown) {
-  const body = extractSection(markdown, '遗留问题核对');
-  if (!body) return [];
-  const items = [];
-  const re = /^\s*(?:[-*]\s*)?(.+?)\s*=>\s*(已修复|仍存在|部分修复)\s*(?:[（(](.*?)[）)])?\s*$/gm;
-  let m;
-  while ((m = re.exec(body))) items.push({ text: m[1].trim(), verdict: m[2], note: m[3] || '' });
-  return items;
-}
-
-// {backend, model, effort, promptTokens, completionTokens, durationMs}
-// → "API · k3-256k · 思考 high · 1,234 tokens · 12.3s"
-const BACKEND_LABELS = { api: 'API', opencode: 'OpenCode', kimi: 'Kimi CLI', codex: 'Codex' };
-
-function formatStats(stats) {
-  const parts = [];
-  if (stats && stats.backend) parts.push(BACKEND_LABELS[stats.backend] || stats.backend);
-  if (stats && stats.model) parts.push(stats.model);
-  if (stats && stats.backend) parts.push(stats.effort ? `思考 ${stats.effort}` : '默认强度');
-  if (stats && stats.promptTokens != null && stats.completionTokens != null) {
-    parts.push(`${(stats.promptTokens + stats.completionTokens).toLocaleString()} tokens`);
-  }
-  if (stats && stats.durationMs != null) {
-    parts.push(`${(stats.durationMs / 1000).toFixed(1)}s`);
-  }
-  return parts.join(' · ');
-}
+import { createRunStatus } from '../lib/runStatus.js';
+import { createFindingsView } from '../lib/findingsView.js';
+import { createHistoryView } from '../lib/historyView.js';
 
 export default {
   id: 'review',
   title: '多角度 Review',
 
   mount(container, ctx) {
-    const { el, bus, state, api, errText, notify, toast, emptyState } = ctx;
+    const { el, bus, state, api, errText, notify, toast, emptyState, workspaceState } = ctx;
+
+    const context = {
+      get el() { return el; },
+      get api() { return api; },
+      get toast() { return toast; },
+      get errText() { return errText; },
+      get state() { return state; },
+      get bus() { return bus; },
+      get mdBox() { return mdBox; },
+      get coverageBox() { return coverageBox; },
+      get findSection() { return findSection; },
+      get scheduleEstimateRefresh() { return estimate.scheduleEstimateRefresh; },
+      get planHint() { return planHint; },
+      get rehydrateFileAnalyses() { return fileCards.rehydrateFileAnalyses; },
+      get ctx() { return ctx; },
+      get overallPanel() { return overallPanel; },
+      get estimateBadge() { return toolbar.estimateBadge; },
+      get multiOn() { return toolbar.multiOn; },
+      set multiOn(value) { toolbar.multiOn = value; },
+      get multiBoxes() { return toolbar.multiBoxes; },
+      get selectedNoiseOverride() { return toolbar.selectedNoiseOverride; },
+      get synSelect() { return toolbar.synSelect; },
+      get fileCardControllers() { return fileCards.fileCardControllers; },
+      get pendingRun() { return pendingRun; },
+      set pendingRun(value) { pendingRun = value; },
+      get setStatus() { return setStatus; },
+      get activePreset() { return toolbar.activePreset; },
+      get cachedCustomPrompt() { return toolbar.cachedCustomPrompt; },
+      set cachedCustomPrompt(value) { toolbar.cachedCustomPrompt = value; },
+      get disposeRunStatus() { return disposeRunStatus; },
+      get dialogResuming() { return dialogResuming; },
+      set dialogResuming(value) { dialogResuming = value; },
+      get running() { return running; },
+      set running(value) { running = value; },
+      get startBtn() { return toolbar.startBtn; },
+      get notify() { return notify; },
+      get mountRunStatus() { return mountRunStatus; },
+      get refresh() { return refresh; },
+      get sectionFeedback() { return resultTools.sectionFeedback; },
+      set sectionFeedback(value) { resultTools.sectionFeedback = value; },
+      get currentResult() { return resultTools.currentResult; },
+      set currentResult(value) { resultTools.currentResult = value; },
+      get injectSectionTools() { return resultTools.injectSectionTools; },
+      get statsLine() { return resultTools.statsLine; },
+      get exportGroup() { return resultTools.exportGroup; },
+      get buildFollowUp() { return resultTools.buildFollowUp; },
+      get disposeChats() { return resultTools.disposeChats; },
+      get findingsView() { return findingsView; },
+      get historyView() { return historyView; },
+      get historyPanel() { return historyPanel; },
+      get autoTitle() { return resultTools.autoTitle; },
+      get prevSwitch() { return toolbar.prevSwitch; },
+      get container() { return container; },
+      get switchMode() { return switchMode; },
+      get defaultExportName() { return resultTools.defaultExportName; },
+      get filesPanel() { return filesPanel; },
+      get emptyState() { return emptyState; },
+    };
 
     // 顶部方案参照提示条，内容由 refreshPlanHint 填充
     const planHint = el('div', {
@@ -110,14 +90,22 @@ export default {
     const historyPanel = el('div', { class: 'seg-panel', style: 'display:none' });
     const panels = { overall: overallPanel, files: filesPanel, history: historyPanel };
     const segBtns = {};
-    const switchMode = (mode) => {
+    const switchMode = (mode, { persist = true } = {}) => {
+      const normalized = mode === 'files' || mode === 'per-file'
+        ? 'files'
+        : mode === 'history'
+          ? 'history'
+          : 'overall';
       for (const [id, btn] of Object.entries(segBtns)) {
-        btn.classList.toggle('active', id === mode);
+        btn.classList.toggle('active', id === normalized);
       }
       for (const [id, panel] of Object.entries(panels)) {
-        panel.style.display = id === mode ? '' : 'none';
+        panel.style.display = id === normalized ? '' : 'none';
       }
-      if (mode === 'history') loadHistory();
+      if (persist && workspaceState && state.folder) {
+        workspaceState.updateProject(state.folder, { reviewMode: normalized });
+      }
+      if (normalized === 'history') loadHistory();
     };
     for (const [id, label] of [['overall', '整体分析'], ['files', '逐文件'], ['history', '历史']]) {
       const btn = el('button', { class: 'seg-btn', type: 'button' }, label);
@@ -131,637 +119,58 @@ export default {
     container.appendChild(filesPanel);
     container.appendChild(historyPanel);
 
-    // ---------- 通用小部件 ----------
-    const statsLine = (stats) =>
-      el('div', { class: 'ai-stats' }, formatStats(stats));
+    const resultTools = createResultTools(context);
 
-    const defaultExportName = (ext) => {
-      const d = new Date();
-      return `review-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-        `-${pad(d.getHours())}${pad(d.getMinutes())}.${ext || 'md'}`;
+    /** @type {{ dispose: () => void, root: HTMLElement } | null} */
+    let activeRunStatus = null;
+    const disposeRunStatus = () => {
+      if (activeRunStatus) {
+        activeRunStatus.dispose();
+        activeRunStatus = null;
+      }
     };
-
-    const exportBtn = (markdown) => {
-      const btn = el('button', { class: 'btn', type: 'button' }, '导出 Markdown');
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        try {
-          const saved = await api.exportReview({
-            defaultName: defaultExportName('md'), content: markdown, ext: 'md',
-          });
-          if (saved && toast) toast(`已保存到 ${saved}`);
-        } catch (err) {
-          toast('导出失败：' + errText(err), 'error');
-        } finally {
-          btn.disabled = false;
-        }
+    const mountRunStatus = (runId, onCancel) => {
+      disposeRunStatus();
+      activeRunStatus = createRunStatus({
+        el,
+        api,
+        bus,
+        runId,
+        label: 'AI 分析中，请稍候…',
+        showDetails: () => ctx.showRunDetails(),
+        onCancel,
+        toast,
+        errText,
       });
-      return btn;
+      return activeRunStatus.root;
     };
 
-    const copyBtn = (markdown) => {
-      const btn = el('button', { class: 'btn', type: 'button' }, '复制');
-      btn.addEventListener('click', () => {
-        navigator.clipboard.writeText(markdown)
-          .then(() => { if (toast) toast('已复制到剪贴板'); })
-          .catch(() => { /* 剪贴板不可用时静默 */ });
-      });
-      return btn;
-    };
-
-    const exportHtmlBtn = (markdown) => {
-      const btn = el('button', { class: 'btn', type: 'button' }, '导出 HTML');
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        try {
-          const saved = await api.exportReview({
-            defaultName: defaultExportName('html'),
-            content: renderMarkdownPage(autoTitle(), markdown),
-            ext: 'html',
-          });
-          if (saved && toast) toast(`已保存到 ${saved}`);
-        } catch (err) {
-          toast('导出失败：' + errText(err), 'error');
-        } finally {
-          btn.disabled = false;
-        }
-      });
-      return btn;
-    };
-
-    const exportGroup = (markdown) => {
-      const group = el('div', { class: 'export-group' });
-      group.appendChild(exportBtn(markdown));
-      group.appendChild(copyBtn(markdown));
-      group.appendChild(exportHtmlBtn(markdown));
-      return group;
-    };
-
-    // 整体分析每次运行递增，用于丢弃过期追问结果
-    let runSeq = 0;
-
-    // 当前整体分析结果的维度标记：{ [小节标题]: 'useful' | 'useless' }，
-    // 随评审历史持久化在 stats.sectionFeedback；重新分析时重置
-    /** @type {Record<string, 'useful' | 'useless'>} */
-    let sectionFeedback = {};
-    /** @type {{ id?: string, title: string, markdown: string, stats: any } | null} */
-    let currentResult = null;
-
-    // 维度标记回写：按 id 原地更新历史记录的 stats（不再整条重写，历史文件不膨胀）；
-    // 旧版本产生的重复记录仍由历史列表按 title+markdown 去重展示
-    const persistSectionFeedback = () => {
-      if (!currentResult || !state.folder || typeof api.updateReviewStats !== 'function') return;
-      const merged = { ...(currentResult.stats || {}), sectionFeedback: { ...sectionFeedback } };
-      currentResult.stats = merged;
-      if (!currentResult.id) return;
-      api.updateReviewStats({ folder: state.folder, id: currentResult.id, stats: merged })
-        .catch(() => { /* 标记写盘失败不影响界面 */ });
-    };
-
-    // 维度追问：整体结论 + 本小节正文作为上下文，回答渲染在该节下方，可多轮追问
-    const buildSectionFollowUp = (markdown, title) => {
-      const seqAtBuild = runSeq;
-      const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const sectionMd = extractSection(markdown, escaped) || '';
-      // 前两条固定为整体结论与本小节正文，后续轮次追加，最多保留最近 10 轮
-      const baseQA = [
-        { question: '（整体评审结论）', answer: markdown },
-        { question: `（聚焦小节：${title}）`, answer: sectionMd },
-      ];
-      let previousQA = [...baseQA];
-      const box = el('div', { class: 'explain-follow section-follow' });
-      const list = el('div', { class: 'explain-follow-list' });
-      const form = el('div', { class: 'explain-follow-form' });
-      const input = el('input', {
-        class: 'settings-input', type: 'text',
-        placeholder: `就「${title}」继续提问…`, spellcheck: 'false',
-      });
-      const askBtn = el('button', { class: 'btn', type: 'button' }, '提问');
-      form.appendChild(input);
-      form.appendChild(askBtn);
-      box.appendChild(list);
-      box.appendChild(form);
-
-      let asking = false;
-      const submit = async () => {
-        const question = input.value.trim();
-        if (!question || asking || !state.changes) return;
-        asking = true;
-        input.disabled = true;
-        askBtn.disabled = true;
-        const item = el('div', { class: 'explain-follow-item' });
-        item.appendChild(el('div', { class: 'explain-follow-q' }, `> ${question}`));
-        const loading = el('div', { class: 'explain-loading' });
-        loading.appendChild(el('span', { class: 'spinner' }));
-        loading.appendChild(el('span', {}, 'AI 思考中，请稍候…'));
-        item.appendChild(loading);
-        list.appendChild(item);
-        const runId = `run-${Date.now()}`;
-        try {
-          const { markdown: answer, stats } = await api.reviewFollowUp({
-            folder: state.folder,
-            files: state.changes.files,
-            previousQA: [...previousQA],
-            question,
-            runId,
-          });
-          if (seqAtBuild !== runSeq) return; // 已重新分析，丢弃过期回答
-          loading.remove();
-          const mdNode = el('div', { class: 'md' });
-          mdNode.innerHTML = renderMarkdown(answer);
-          item.appendChild(mdNode);
-          item.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
-          previousQA.push({ question, answer });
-          if (previousQA.length > baseQA.length + 10) {
-            previousQA = [...baseQA, ...previousQA.slice(-10)];
-          }
-          input.value = '';
-        } catch (err) {
-          if (seqAtBuild !== runSeq) return;
-          loading.remove();
-          if (errText(err).includes('已被用户终止')) {
-            item.appendChild(el('div', { class: 'empty-hint' }, '已终止'));
-          } else {
-            item.appendChild(el('div', { class: 'error-text' },
-              `追问失败：${errText(err)}`));
-          }
-        } finally {
-          asking = false;
-          input.disabled = false;
-          askBtn.disabled = false;
-        }
-      };
-      askBtn.addEventListener('click', submit);
-      input.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') submit();
-      });
-      return box;
-    };
-
-    // 渲染完成后给每个 h2 小节注入操作条（追问 / 有用 / 没用）。
-    // 流式期间不注入（只在整体分析完成后调用）；追问表单懒构建（首次点「追问」才创建），
-    // 容器挂在小节正文之后；导出走原始 markdown 字符串，这些注入的 DOM 不会进入导出内容
-    const injectSectionTools = (markdown) => {
-      if (typeof api.reviewFollowUp !== 'function') return;
-      for (const h2 of mdBox.querySelectorAll(':scope > h2')) {
-        const title = (h2.textContent || '').trim(); // 注入按钮前先取纯标题
-        /** @type {HTMLElement | null} */
-        let followBox = null;
-        // 懒构建追问表单：绝大多数小节永远不会被点开
-        const ensureFollowBox = () => {
-          let box = followBox;
-          if (!box) {
-            box = /** @type {HTMLElement} */ (buildSectionFollowUp(markdown, title));
-            box.style.display = 'none';
-            let next = h2.nextSibling;
-            while (next && !(next.nodeType === 1 && /** @type {Element} */ (next).tagName === 'H2')) {
-              next = next.nextSibling;
-            }
-            if (next) mdBox.insertBefore(box, next);
-            else mdBox.appendChild(box);
-            followBox = box;
-          }
-          return box;
-        };
-
-        const tools = el('span', { class: 'section-tools' });
-        const askBtn = el('button', {
-          class: 'section-tool', type: 'button', title: '就这一节继续追问',
-        }, '追问');
-        const usefulBtn = el('button', {
-          class: 'section-tool', type: 'button', title: '帮助改进评审维度',
-        }, '有用');
-        const uselessBtn = el('button', {
-          class: 'section-tool', type: 'button', title: '帮助改进评审维度',
-        }, '没用');
-        const syncMarkUI = () => {
-          const v = sectionFeedback[title];
-          usefulBtn.classList.toggle('marked', v === 'useful');
-          uselessBtn.classList.toggle('marked', v === 'useless');
-          tools.classList.toggle('has-mark', !!v);
-        };
-        askBtn.addEventListener('click', () => {
-          const box = ensureFollowBox();
-          const opening = box.style.display === 'none';
-          box.style.display = opening ? '' : 'none';
-          h2.classList.toggle('tools-open', opening);
-          const inputEl = opening ? box.querySelector('input') : null;
-          if (inputEl) inputEl.focus();
-        });
-        usefulBtn.addEventListener('click', () => {
-          if (sectionFeedback[title] === 'useful') delete sectionFeedback[title];
-          else sectionFeedback[title] = 'useful';
-          syncMarkUI();
-          persistSectionFeedback();
-        });
-        uselessBtn.addEventListener('click', () => {
-          if (sectionFeedback[title] === 'useless') delete sectionFeedback[title];
-          else sectionFeedback[title] = 'useless';
-          syncMarkUI();
-          persistSectionFeedback();
-        });
-        tools.appendChild(askBtn);
-        tools.appendChild(usefulBtn);
-        tools.appendChild(uselessBtn);
-        h2.appendChild(tools);
-        syncMarkUI();
-      }
-    };
-
-    // 追问区：基于本次整体分析结果继续提问，最多保留最近 10 轮（首条固定为初始结果）
-    const buildFollowUp = (markdown) => {
-      if (typeof api.reviewFollowUp !== 'function') return null;
-      const seqAtBuild = runSeq;
-      let previousQA = [{ question: '（初始结果）', answer: markdown }];
-      const box = el('div', { class: 'explain-follow' });
-      const list = el('div', { class: 'explain-follow-list' });
-      const form = el('div', { class: 'explain-follow-form' });
-      const input = el('input', {
-        class: 'settings-input', type: 'text',
-        placeholder: '就这次评审继续提问…', spellcheck: 'false',
-      });
-      const askBtn = el('button', { class: 'btn', type: 'button' }, '提问');
-      form.appendChild(input);
-      form.appendChild(askBtn);
-      box.appendChild(list);
-      box.appendChild(form);
-
-      let asking = false;
-      const submit = async () => {
-        const question = input.value.trim();
-        if (!question || asking || !state.changes) return;
-        asking = true;
-        input.disabled = true;
-        askBtn.disabled = true;
-        const item = el('div', { class: 'explain-follow-item' });
-        item.appendChild(el('div', { class: 'explain-follow-q' }, `> ${question}`));
-        const loading = el('div', { class: 'explain-loading' });
-        loading.appendChild(el('span', { class: 'spinner' }));
-        loading.appendChild(el('span', {}, 'AI 思考中，请稍候…'));
-        item.appendChild(loading);
-        list.appendChild(item);
-        const runId = `run-${Date.now()}`;
-        try {
-          const { markdown: answer, stats } = await api.reviewFollowUp({
-            folder: state.folder,
-            files: state.changes.files,
-            previousQA: [...previousQA],
-            question,
-            runId,
-          });
-          if (seqAtBuild !== runSeq) return; // 已重新分析，丢弃过期回答
-          loading.remove();
-          const mdNode = el('div', { class: 'md' });
-          mdNode.innerHTML = renderMarkdown(answer);
-          item.appendChild(mdNode);
-          item.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
-          previousQA.push({ question, answer });
-          if (previousQA.length > 10) {
-            previousQA = [previousQA[0], ...previousQA.slice(-9)];
-          }
-          input.value = '';
-        } catch (err) {
-          if (seqAtBuild !== runSeq) return;
-          loading.remove();
-          if (errText(err).includes('已被用户终止')) {
-            item.appendChild(el('div', { class: 'empty-hint' }, '已终止'));
-          } else {
-            item.appendChild(el('div', { class: 'error-text' },
-              `追问失败：${errText(err)}`));
-          }
-        } finally {
-          asking = false;
-          input.disabled = false;
-          askBtn.disabled = false;
-        }
-      };
-      askBtn.addEventListener('click', submit);
-      input.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') submit();
-      });
-      return box;
-    };
-
-    const countChanges = (files) => {
-      let add = 0, del = 0;
-      for (const f of files)
-        for (const h of f.hunks)
-          for (const l of h.lines) {
-            if (l.type === 'add') add++;
-            else if (l.type === 'del') del++;
-          }
-      return { add, del };
-    };
-
-    const autoTitle = () => {
-      const d = new Date();
-      const files = state.changes ? state.changes.files : [];
-      const { add, del } = countChanges(files);
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-        `${pad(d.getHours())}:${pad(d.getMinutes())} · ${files.length} 文件 +${add} -${del}`;
-    };
-
-    const loadingNode = () => createLoadingNode(el, ctx, 'AI 分析中，请稍候…');
-
-    // ---------- 整体分析 ----------
-    const toolbar = el('div', { class: 'review-toolbar' });
-    const chips = el('div', { class: 'review-chips' });
-    // 固定 8 维度 + 设置里的自定义维度（每行一个）+ 参照方案时追加「需求符合度」
-    const parseCustomDimensions = (raw) =>
-      String(raw || '').split('\n').map((t) => t.trim()).filter(Boolean);
-    let cachedCustomDims = [];
-    let activePlanTitle = '';
-    // 评审预设：'' 表示「（当前设置）」，选中预设后 dimensions/customPrompt 对本次评审生效
-    let cachedPresets = [];
-    let activePresetId = '';
-    const activePreset = () => cachedPresets.find((p) => p && p.id === activePresetId) || null;
-    const activeDims = () => {
-      const p = activePreset();
-      return p && Array.isArray(p.dimensions)
-        ? p.dimensions.map((d) => String(d || '').trim()).filter(Boolean)
-        : cachedCustomDims;
-    };
-    const rebuildChips = () => {
-      chips.textContent = '';
-      const dims = activePlanTitle
-        ? DIMENSIONS.concat(activeDims(), ['需求符合度'])
-        : DIMENSIONS.concat(activeDims());
-      for (const dim of dims) {
-        const chip = el('button', { class: 'review-chip', type: 'button' }, dim);
-        chip.addEventListener('click', () => {
-          const target = findSection(dim);
-          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        });
-        chips.appendChild(chip);
-      }
-    };
-    let cachedCustomPrompt = '';
-    const presetSelect = el('select', {
-      class: 'settings-input review-preset-select', title: '评审预设：在 AI 设置中管理',
-    });
-    const rebuildPresetOptions = () => {
-      presetSelect.textContent = '';
-      presetSelect.appendChild(el('option', { value: '', text: '（当前设置）' }));
-      for (const p of cachedPresets) {
-        presetSelect.appendChild(el('option', { value: p.id, text: p.name || p.id }));
-      }
-      presetSelect.value = activePresetId;
-      presetSelect.style.display = cachedPresets.length ? '' : 'none';
-    };
-    presetSelect.addEventListener('change', async () => {
-      activePresetId = presetSelect.value;
-      rebuildChips();
-      const preset = activePreset();
-      if (!preset) return;
-      // 应用预设的 AI 设置：backend 与思考强度写回设置，model 落到对应后端的字段
-      const patch = {};
-      const modelField = { api: 'model', opencode: 'opencodeModel', kimi: 'kimiModel', codex: 'codexModel' }[preset.backend];
-      if (modelField) {
-        patch.backend = preset.backend;
-        if (typeof preset.model === 'string') patch[modelField] = preset.model;
-      }
-      if (typeof preset.effort === 'string') patch.reasoningEffort = preset.effort;
-      if (!Object.keys(patch).length) return;
-      try {
-        await api.saveSettings(patch);
-        bus.dispatchEvent(new CustomEvent('settings:saved'));
-        if (toast) toast(`已应用预设「${preset.name}」`);
-      } catch (err) {
-        toast('应用预设失败：' + errText(err), 'error');
-      }
-    });
-    const loadDimensions = () => {
-      api.getSettings()
-        .then((s) => {
-          syncMultiLabels(s);
-          cachedCustomPrompt = (s && s.customPrompt) || '';
-          cachedCustomDims = parseCustomDimensions(s && s.customDimensions);
-          cachedPresets = (Array.isArray(s && s.presets) ? s.presets : [])
-            .filter((p) => p && typeof p.id === 'string' && p.id);
-          if (activePresetId && !cachedPresets.some((p) => p.id === activePresetId)) {
-            activePresetId = '';
-          }
-          rebuildPresetOptions();
-          rebuildChips();
-        })
-        .catch(() => {});
-    };
-    // 有启用方案时在 tab 顶部提示；× 临时关闭参照（写 localStorage，不删方案）
-    const refreshPlanHint = async () => {
-      const plan = await loadPlanContext(api, state.folder);
-      activePlanTitle = plan ? plan.title : '';
-      rebuildChips();
-      planHint.textContent = '';
-      if (!plan) {
-        planHint.style.display = 'none';
-        return;
-      }
-      planHint.style.display = '';
-      planHint.appendChild(el('span', {}, `📋 参照方案：${plan.title}`));
-      const closeBtn = el('button', {
-        class: 'run-link', type: 'button',
-        title: '临时关闭，评审时不再参照需求方案',
-      }, '×');
-      closeBtn.addEventListener('click', () => {
-        localStorage.setItem('planReviewEnabled', '0');
-        refreshPlanHint();
-      });
-      planHint.appendChild(closeBtn);
-    };
-    rebuildChips();
-    rebuildPresetOptions();
-    loadDimensions();
-    refreshPlanHint();
-    bus.addEventListener('settings:saved', loadDimensions);
-
-    // ---------- 多模型并行评审：勾选多个后端并行评审，再由指定模型汇总 ----------
-    const MULTI_BACKENDS = [['api', 'API'], ['opencode', 'OpenCode'], ['kimi', 'Kimi CLI'], ['codex', 'Codex']];
-    const MULTI_MODEL_FIELD = { api: 'model', opencode: 'opencodeModel', kimi: 'kimiModel', codex: 'codexModel' };
-    let multiOn = localStorage.getItem('multiReviewEnabled') === '1';
-    const multiToggle = el('button', {
-      class: 'review-chip', type: 'button',
-      title: '多个模型并行评审同一份改动，再由汇总模型合并为一份报告（各模型独立消耗 token）',
-    }, '多模型');
-    const multiRow = el('div', { class: 'review-multi-row', style: 'display:none' });
-    /** @type {Map<string, HTMLInputElement>} */
-    const multiBoxes = new Map();
-    for (const [value, label] of MULTI_BACKENDS) {
-      const box = el('input', { type: 'checkbox' });
-      const item = el('label', { class: 'review-multi-item' });
-      item.appendChild(box);
-      item.appendChild(el('span', { class: 'review-multi-name' }, label));
-      item.appendChild(el('span', { class: 'review-multi-model', dataset: { backend: value } }, ''));
-      multiBoxes.set(value, box);
-      multiRow.appendChild(item);
-    }
-    multiRow.appendChild(el('span', { class: 'toolbar-label' }, '汇总模型'));
-    const synSelect = el('select', {
-      class: 'settings-input review-preset-select', title: '用哪个模型把多份评审合并为最终报告',
-    });
-    for (const [value, label] of MULTI_BACKENDS) {
-      synSelect.appendChild(el('option', { value, text: label }));
-    }
-    multiRow.appendChild(synSelect);
-    multiRow.appendChild(el('span', { class: 'settings-hint' }, '并行评审互不影响，单个失败不阻断；token 独立计费'));
-
-    const persistMulti = () => {
-      localStorage.setItem('multiReviewModels',
-        JSON.stringify([...multiBoxes].filter(([, b]) => b.checked).map(([v]) => v)));
-      localStorage.setItem('multiReviewSynthesizer', synSelect.value);
-    };
-    try {
-      const saved = JSON.parse(localStorage.getItem('multiReviewModels') || '[]');
-      for (const v of saved) {
-        const box = multiBoxes.get(v);
-        if (box) box.checked = true;
-      }
-    } catch { /* 损坏的本地存储按空处理 */ }
-    if (localStorage.getItem('multiReviewSynthesizer')) {
-      synSelect.value = localStorage.getItem('multiReviewSynthesizer');
-    }
-    for (const box of multiBoxes.values()) box.addEventListener('change', persistMulti);
-    synSelect.addEventListener('change', persistMulti);
-    const syncMultiToggle = () => {
-      multiToggle.classList.toggle('active', multiOn);
-      multiRow.style.display = multiOn ? '' : 'none';
-    };
-    multiToggle.addEventListener('click', () => {
-      multiOn = !multiOn;
-      localStorage.setItem('multiReviewEnabled', multiOn ? '1' : '0');
-      syncMultiToggle();
-    });
-    syncMultiToggle();
-    // 复选框标注各后端配置的模型名；汇总模型未选过时默认当前后端
-    const syncMultiLabels = (s) => {
-      if (!s) return;
-      for (const [value] of MULTI_BACKENDS) {
-        const span = multiRow.querySelector(`[data-backend="${value}"]`);
-        if (span) span.textContent = `（${s[MULTI_MODEL_FIELD[value]] || '默认模型'}）`;
-      }
-      if (!localStorage.getItem('multiReviewSynthesizer') && s.backend) {
-        synSelect.value = s.backend;
-      }
-    };
-
-    const startBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '开始 AI 分析');    // 「对比上次评审」开关：开启且存在历史评审时，把最近一次评审结论带给 AI 做对比
-    const prevLabel = el('label', {
-      class: 'review-preset-toggle', title: '开启后，评审会带上最近一次评审的结论，追加「与上次对比」小节',
-      style: 'display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text-dim)',
-    });
-    const prevSwitch = el('input', { type: 'checkbox' });
-    prevSwitch.checked = localStorage.getItem('reviewPrevEnabled') === '1';
-    prevSwitch.addEventListener('change', () => {
-      localStorage.setItem('reviewPrevEnabled', prevSwitch.checked ? '1' : '0');
-    });
-    prevLabel.appendChild(prevSwitch);
-    prevLabel.appendChild(el('span', {}, '对比上次评审'));
-    const runLink = el('button', {
-      class: 'run-link', type: 'button', title: '查看当前运行 / 暂停与继续',
-      onClick: () => ctx.showRunDetails(),
-    }, '运行详情');
-    toolbar.appendChild(chips);
-    toolbar.appendChild(presetSelect);
-    toolbar.appendChild(prevLabel);
-    toolbar.appendChild(multiToggle);
-    toolbar.appendChild(startBtn);
-    toolbar.appendChild(runLink);
-    overallPanel.appendChild(toolbar);
-    overallPanel.appendChild(multiRow);
+    const toolbar = createToolbar(context);
 
     const statusBox = el('div', { class: 'review-status' });
     const checklistBox = el('div', { style: 'display:none' });
+    const coverageBox = el('div');
     const mdBox = el('div', { class: 'md review-result' });
     overallPanel.appendChild(statusBox);
+    overallPanel.appendChild(coverageBox);
     overallPanel.appendChild(checklistBox);
     overallPanel.appendChild(mdBox);
 
-    // ---------- 问题清单（可勾选，三状态：待处理/已修复/不处理）----------
-    const CHECKLIST_STATUS_LABELS = { pending: '待处理', fixed: '已修复', wontfix: '不处理' };
-    const CHECKLIST_NEXT = { pending: 'fixed', fixed: 'wontfix', wontfix: 'pending' };
-    const checklistApiOk = typeof api.checklistList === 'function'
-      && typeof api.checklistSave === 'function'
-      && typeof api.checklistSetStatus === 'function';
-    let checklistItems = [];
-
-    const renderChecklist = () => {
-      checklistBox.textContent = '';
-      if (!checklistItems.length) {
-        checklistBox.style.display = 'none';
-        return;
-      }
-      checklistBox.style.display = '';
-      const pendingCount = checklistItems.filter((it) => it.status === 'pending').length;
-      const box = el('div', { class: 'review-checklist' });
-      box.appendChild(el('div', { class: 'review-checklist-title' },
-        `问题清单（${pendingCount} 条待处理，点击状态标签切换）`));
-      for (const item of checklistItems) {
-        const row = el('div', { class: `checklist-item checklist-${item.status}` });
-        const statusBtn = el('button', {
-          class: 'checklist-status', type: 'button', title: '点击切换：待处理 → 已修复 → 不处理',
-        }, CHECKLIST_STATUS_LABELS[item.status]);
-        statusBtn.addEventListener('click', async () => {
-          item.status = CHECKLIST_NEXT[item.status];
-          renderChecklist();
-          try {
-            await api.checklistSetStatus({ folder: state.folder, id: item.id, status: item.status });
-          } catch { /* 状态写盘失败不影响界面 */ }
-        });
-        row.appendChild(statusBtn);
-        row.appendChild(el('span', { class: 'checklist-text' }, item.text));
-        box.appendChild(row);
-      }
-      checklistBox.appendChild(box);
-    };
-
-    // 分析完成后：合并新解析的问题与历史清单（按文本匹配保留状态），
-    // 并应用「遗留问题核对」节中 AI 判定已修复的条目；解析不到清单节时不显示、不报错
-    const syncChecklist = async (markdown) => {
-      if (!checklistApiOk || !state.folder) return;
-      const issues = parseIssueList(markdown);
-      const legacy = parseLegacyCheck(markdown);
-      if (!issues.length && !legacy.length) {
-        checklistItems = [];
-        renderChecklist();
-        return;
-      }
-      let stored = [];
-      try {
-        stored = await api.checklistList(state.folder);
-      } catch { /* 读取失败按空清单处理 */ }
-      const byText = new Map(stored.map((it) => [it.text, it]));
-      const merged = [];
-      for (const text of issues) {
-        const existing = byText.get(text);
-        if (existing) {
-          merged.push(existing);
-        } else {
-          merged.push({
-            id: `i${Date.now().toString(36)}_${merged.length}`,
-            text, status: 'pending', createdAt: Date.now(),
-          });
-        }
-      }
-      // 本次清单未覆盖的历史条目保留（待处理条目会在下次分析时传给 AI 核对）
-      for (const it of stored) {
-        if (!merged.includes(it)) merged.push(it);
-      }
-      let fixedCount = 0;
-      for (const entry of legacy) {
-        if (entry.verdict !== '已修复') continue;
-        const target = merged.find((it) => it.status === 'pending'
-          && (it.text === entry.text || it.text.includes(entry.text) || entry.text.includes(it.text)));
-        if (target) {
-          target.status = 'fixed';
-          fixedCount += 1;
-        }
-      }
-      checklistItems = merged;
-      renderChecklist();
-      try {
-        await api.checklistSave({ folder: state.folder, items: merged });
-      } catch { /* 清单写盘失败不影响结果展示 */ }
-      if (fixedCount && toast) toast(`${fixedCount} 条遗留问题已确认修复`);
-    };
+    const findingsView = createFindingsView({
+      container: checklistBox,
+      el,
+      api,
+      bus,
+      getFolder: () => state.folder,
+      toast,
+      errText,
+      showRunDetails: () => ctx.showRunDetails(),
+    });
+    /** @type {string | null} */
+    let checklistFolder = state.folder;
+    if (state.folder) {
+      findingsView.reloadFromStore(state.folder);
+    }
 
     // 在已渲染的 markdown 中按标题文字定位小节
     const findSection = (dim) => {
@@ -772,334 +181,81 @@ export default {
     };
 
     let running = false;
+    /** @type {{ runId: string, folder: string, title: string } | null} */
+    let pendingRun = null;
+    let dialogResuming = false;
 
-    const setStatus = (node, fill) => {
-      statusBox.textContent = '';
-      statusBox.classList.toggle('status-fill', !!fill);
-      if (node) statusBox.appendChild(node);
-    };
+    const setStatus = (node, fill) => setStatusBox(statusBox, node, fill);
 
     const refresh = () => {
+      if (pendingRun) return;
       if (!state.changes || !state.changes.files.length) {
-        startBtn.disabled = true;
-        startBtn.textContent = '开始 AI 分析';
+        toolbar.startBtn.disabled = true;
+        toolbar.startBtn.textContent = '开始 AI 分析';
+        toolbar.estimateBadge.style.display = 'none';
         setStatus(emptyState('暂无可评审的改动',
           '点击左下角「选择项目」选择项目文件夹，并确保存在未提交的改动'), true);
         return;
       }
-      startBtn.disabled = running;
+      toolbar.startBtn.disabled = running || !!pendingRun;
       if (!running && !mdBox.firstChild) {
         setStatus(emptyState('准备就绪', '点击「开始 AI 分析」生成多角度评审报告'), true);
       }
     };
 
-    const showError = (message) => {
-      const box = el('div', { class: 'review-error' });
-      box.appendChild(el('div', { class: 'error-text' }, `分析失败：${message}`));
-      const retry = el('button', { class: 'btn', type: 'button' }, '重试');
-      retry.addEventListener('click', () => runAnalysis());
-      box.appendChild(retry);
-      // 一次性自定义要求重跑：仅本次生效，不写回设置
-      const rerunForm = el('div', { class: 'explain-follow-form review-rerun-form' });
-      const promptInput = el('input', {
-        class: 'settings-input', type: 'text',
-        placeholder: '临时自定义要求，可留空', spellcheck: 'false',
-      });
-      promptInput.value = (activePreset() && activePreset().customPrompt) || cachedCustomPrompt;
-      const rerunBtn = el('button', { class: 'btn', type: 'button' }, '按此重跑');
-      rerunBtn.addEventListener('click', () => runAnalysis(promptInput.value));
-      promptInput.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') runAnalysis(promptInput.value);
-      });
-      rerunForm.appendChild(promptInput);
-      rerunForm.appendChild(rerunBtn);
-      box.appendChild(rerunForm);
-      setStatus(box);
-    };
+    const estimate = createEstimate(context);
 
-    const runAnalysis = async (overridePrompt) => {
-      if (running || !state.changes || !state.changes.files.length) return;
-      const multiModels = multiOn
-        ? [...multiBoxes].filter(([, b]) => b.checked).map(([v]) => v)
-        : [];
-      if (multiOn && multiModels.length < 2) {
-        toast('多模型评审请至少选择 2 个模型', 'error');
-        return;
-      }
-      // 按钮点击会把事件对象传进来，只接受字符串形式的临时要求
-      const override = typeof overridePrompt === 'string' ? overridePrompt.trim() : '';
-      running = true;
-      runSeq++;
-      mdBox.textContent = '';
-      sectionFeedback = {};
-      currentResult = null;
-      checklistItems = [];
-      renderChecklist();
-      setStatus(loadingNode());
-      const skippedResources = state.changes.files.filter((f) => f.resource).length;
-      if (skippedResources > 0) {
-        toast(`已跳过 ${skippedResources} 个资源文件（图片/资源目录等不参与评审）`);
-      }
-      // API 后端流式输出：增量文本先以纯文本预览，结束后替换为渲染好的 markdown
-      const runId = `run-${Date.now()}`;
-      const stream = createStreamPreview({ el, api, runId, parent: mdBox });
-      // 运行中开始按钮变为「终止运行」；多模型时同时终止各子跑道
-      activeCancel = () => {
-        if (typeof api.cancelRun !== 'function') return;
-        api.cancelRun(runId).catch(() => {});
-        multiModels.forEach((_, i) => api.cancelRun(`${runId}-m${i}`).catch(() => {}));
-      };
-      startBtn.textContent = '终止运行';
-      startBtn.classList.add('btn-danger');
-      try {
-        const payload = {
-          folder: state.folder,
-          files: state.changes.files,
-          runId,
-        };
-        // 开启「对比上次评审」且有历史评审时，带上最近一次评审结论
-        if (prevSwitch.checked && typeof api.listReviews === 'function') {
-          try {
-            const history = await api.listReviews(state.folder);
-            const latest = Array.isArray(history) && history.length ? history[0] : null;
-            if (latest && typeof latest.markdown === 'string' && latest.markdown.trim()) {
-              payload.previousReview = latest.markdown;
-            }
-          } catch { /* 历史读取失败不影响本次评审 */ }
-        }
-        const preset = activePreset();
-        if (override) payload.customPromptOverride = override;
-        else if (preset && typeof preset.customPrompt === 'string' && preset.customPrompt.trim()) {
-          payload.customPromptOverride = preset.customPrompt;
-        }
-        if (preset && Array.isArray(preset.dimensions)) {
-          const dims = preset.dimensions.map((d) => String(d || '').trim()).filter(Boolean);
-          if (dims.length) payload.customDimensionsOverride = dims.join('\n');
-        }
-        // 上次清单中仍为「待处理」的条目传给 AI 做遗留核对；清单不可用时静默跳过
-        if (checklistApiOk && state.folder) {
-          try {
-            const items = await api.checklistList(state.folder);
-            const pendingTexts = (Array.isArray(items) ? items : [])
-              .filter((it) => it && it.status === 'pending' && it.text)
-              .map((it) => it.text);
-            if (pendingTexts.length) payload.pendingIssues = pendingTexts;
-          } catch { /* 清单读取失败不阻断分析 */ }
-        }
-        const plan = await loadPlanContext(api, state.folder);
-        if (plan) payload.planContext = plan.section;
-        if (multiModels.length) {
-          payload.models = multiModels.map((b) => ({ backend: b }));
-          payload.synthesizer = { backend: synSelect.value };
-        }
-        const result = multiModels.length
-          ? await api.analyzeOverviewMulti(payload)
-          : await api.analyzeOverview(payload);
-        const { markdown, stats, perModel } = result;
-        setStatus(null);
-        mdBox.innerHTML = renderMarkdown(markdown);
-        // 多模型：汇总报告下方折叠展示各模型原始结果（含失败标注）
-        if (Array.isArray(perModel) && perModel.length) {
-          const det = el('details', { class: 'multi-raw' });
-          det.appendChild(el('summary', {}, `各模型原始结果（${perModel.length}）`));
-          for (const pm of perModel) {
-            det.appendChild(el('h3', {}, pm.label + (pm.model ? ` · ${pm.model}` : '')));
-            if (pm.markdown) {
-              const node = el('div', { class: 'md' });
-              node.innerHTML = renderMarkdown(pm.markdown);
-              det.appendChild(node);
-            } else {
-              det.appendChild(el('div', { class: 'error-text' }, `失败：${pm.error || '未知错误'}`));
-            }
-          }
-          mdBox.appendChild(det);
-        }
-        sectionFeedback = {};
-        currentResult = { title: autoTitle(), markdown, stats };
-        injectSectionTools(markdown);
-        // 清单解析/写盘失败不影响评审结果展示
-        try { await syncChecklist(markdown); } catch { /* 忽略 */ }
-        mdBox.appendChild(statsLine(stats));
-        mdBox.appendChild(exportGroup(markdown));
-        const followUp = buildFollowUp(markdown);
-        if (followUp) mdBox.appendChild(followUp);
-        notify('AI 分析完成', '多角度 Review 已生成');
-        // 历史保存失败不影响结果展示；记录 id 供维度标记原地更新
-        try {
-          const saved = await api.saveReview({
-            folder: state.folder, title: currentResult.title, markdown,
-            stats: { ...(stats || {}), sectionFeedback: { ...sectionFeedback } },
-          });
-          if (saved && saved.id) currentResult.id = saved.id;
-        } catch { /* 忽略 */ }
-      } catch (err) {
-        if (errText(err).includes('已被用户终止')) {
-          setStatus(el('div', { class: 'empty-hint' }, '已终止，可点击「开始 AI 分析」重新开始'));
-        } else {
-          showError(errText(err));
-          notify('AI 分析失败', errText(err));
-        }
-      } finally {
-        if (stream.unsubscribe) stream.unsubscribe();
-        stream.streamBox.remove();
-        activeCancel = null;
-        startBtn.textContent = '开始 AI 分析';
-        startBtn.classList.remove('btn-danger');
-        running = false;
-      }
-    };
+    createRunFlow(context);
 
-    /** @type {(() => void) | null} */
-    let activeCancel = null;
-    startBtn.addEventListener('click', () => {
-      if (running && activeCancel) {
-        activeCancel();
-        return;
-      }
-      runAnalysis();
+    const fileCards = createFileCards(context);
+
+    const historyView = createHistoryView({
+      container: historyPanel,
+      el,
+      api,
+      bus,
+      getFolder: () => state.folder,
+      kind: 'review',
+      emptyState,
+      selectFolder: () => ctx.selectFolder(),
+      toast,
+      errText,
+      onEntryUpdated: (updated) => {
+        if (resultTools.currentResult && resultTools.currentResult.id === updated.id) {
+          resultTools.currentResult.title = updated.title;
+        }
+      },
     });
-
-    // ⌘Enter 开始分析（仅本 tab 可见时）
-    document.addEventListener('keydown', (ev) => {
-      if (container.hidden) return;
-      if (!ev.metaKey || ev.key !== 'Enter' || ev.shiftKey || ev.altKey || ev.ctrlKey) return;
-      if (running || startBtn.disabled) return;
-      ev.preventDefault();
-      startBtn.click();
-    });
-
-    // ---------- 逐文件 ----------
-    // file → 触发该文件逐文件分析（供「改动总览」的 AI 按钮跳转后调用）
-    const fileAnalyzeTriggers = new Map();
-    const renderFilesPanel = () => {
-      filesPanel.textContent = '';
-      fileAnalyzeTriggers.clear();
-      if (!state.changes || !state.changes.files.length) {
-        filesPanel.appendChild(emptyState('请先加载项目改动',
-          '点击左下角「选择项目」后，这里会列出可逐文件分析的改动'));
-        return;
-      }
-      for (const file of state.changes.files) {
-        if (file.resource) continue; // 资源文件不参与评审
-        const { add, del } = countChanges([file]);
-        const card = el('div', { class: 'review-file-item' });
-        const head = el('div', { class: 'review-file-head' });
-        head.appendChild(el('span', { class: 'review-file-path' }, file.path));
-        head.appendChild(el('span', { class: 'stat-add' }, `+${add}`));
-        head.appendChild(el('span', { class: 'stat-del' }, `-${del}`));
-        const analyzeBtn = el('button', { class: 'btn', type: 'button' }, '分析');
-        head.appendChild(analyzeBtn);
-        card.appendChild(head);
-        const resultBox = el('div', { class: 'review-file-result' });
-        card.appendChild(resultBox);
-        filesPanel.appendChild(card);
-
-        let fileRunning = false;
-        fileAnalyzeTriggers.set(file, () => {
-          card.scrollIntoView({ block: 'start' });
-          analyzeBtn.click();
-        });
-        analyzeBtn.addEventListener('click', async () => {
-          if (fileRunning) return;
-          fileRunning = true;
-          analyzeBtn.disabled = true;
-          resultBox.textContent = '';
-          resultBox.appendChild(loadingNode());
-          const runId = `run-${Date.now()}`;
-          const stream = createStreamPreview({ el, api, runId, parent: resultBox });
-          try {
-            const filePayload = { folder: state.folder, file, runId };
-            const plan = await loadPlanContext(api, state.folder);
-            if (plan) filePayload.planContext = plan.section;
-            const { markdown, stats } = await api.analyzeFile(filePayload);
-            resultBox.textContent = '';
-            const mdNode = el('div', { class: 'md' });
-            mdNode.innerHTML = renderMarkdown(markdown);
-            resultBox.appendChild(mdNode);
-            resultBox.appendChild(statsLine(stats));
-          } catch (err) {
-            resultBox.textContent = '';
-            const box = el('div', { class: 'review-error' });
-            box.appendChild(el('div', { class: 'error-text' }, `分析失败：${errText(err)}`));
-            const retry = el('button', { class: 'btn', type: 'button' }, '重试');
-            retry.addEventListener('click', () => analyzeBtn.click());
-            box.appendChild(retry);
-            resultBox.appendChild(box);
-          } finally {
-            if (stream.unsubscribe) stream.unsubscribe();
-            stream.streamBox.remove();
-            fileRunning = false;
-            analyzeBtn.disabled = false;
-          }
-        });
-      }
-    };
-
-    // ---------- 历史 ----------
-    const loadHistory = async () => {
+    const loadHistory = () => historyView.load();
+    bus.addEventListener('project:changed', () => {
+      findingsView.clear();
+      fileCards.renderFilesPanel();
       historyPanel.textContent = '';
-      if (!state.folder) {
-        historyPanel.appendChild(emptyState('请先选择项目文件夹', '选择一个项目后，这里会显示历史评审记录',
-          { label: '选择项目', onClick: () => ctx.selectFolder() }));
-        return;
-      }
-      let reviews = [];
-      try {
-        reviews = await api.listReviews(state.folder);
-      } catch (err) {
-        historyPanel.appendChild(el('div', { class: 'error-text' },
-          `加载历史失败：${errText(err)}`));
-        return;
-      }
-      // 维度标记变化会重存同 title+markdown 的记录，列表按时间倒序，只展示最新一条
-      const seenEntries = new Set();
-      reviews = (Array.isArray(reviews) ? reviews : []).filter((entry) => {
-        const key = `${entry && entry.title}\n${entry && entry.markdown}`;
-        if (seenEntries.has(key)) return false;
-        seenEntries.add(key);
-        return true;
-      });
-      if (!reviews || !reviews.length) {
-        historyPanel.appendChild(emptyState('暂无历史评审记录',
-          '完成一次整体分析后会自动保存到这里'));
-        return;
-      }
-      const list = el('div', { class: 'review-history' });
-      for (const entry of reviews) {
-        const item = el('div', { class: 'review-history-item' });
-        const head = el('button', { class: 'review-history-head', type: 'button' });
-        head.appendChild(el('span', { class: 'review-history-time' },
-          new Date(entry.createdAt).toLocaleString()));
-        head.appendChild(el('span', { class: 'review-history-title' }, entry.title));
-        if (entry.stats) {
-          head.appendChild(el('span', { class: 'ai-stats' }, formatStats(entry.stats)));
-        }
-        const body = el('div', { class: 'review-history-body', style: 'display:none' });
-        head.addEventListener('click', () => {
-          const opening = body.style.display === 'none';
-          body.style.display = opening ? '' : 'none';
-          if (opening && !body.firstChild) {
-            const mdNode = el('div', { class: 'md' });
-            mdNode.innerHTML = renderMarkdown(entry.markdown);
-            body.appendChild(mdNode);
-            body.appendChild(exportBtn(entry.markdown));
-          }
-        });
-        item.appendChild(head);
-        item.appendChild(body);
-        list.appendChild(item);
-      }
-      historyPanel.appendChild(list);
-    };
+    });
 
-    bus.addEventListener('plan:changed', refreshPlanHint);
+    bus.addEventListener('plan:changed', () => {
+      toolbar.refreshPlanHint();
+      fileCards.rehydrateFileAnalyses();
+      estimate.scheduleEstimateRefresh();
+    });
 
     bus.addEventListener('changes:loaded', () => {
       refresh();
-      renderFilesPanel();
-      refreshPlanHint(); // 文件夹可能已切换，刷新参照方案提示
-      // 保留已有分析结果，只提示可能过期，不打断阅读/进行中的分析
-      if (mdBox.firstChild) {
+      fileCards.renderFilesPanel();
+      toolbar.refreshPlanHint();
+      estimate.scheduleEstimateRefresh();
+      if (state.folder !== checklistFolder) {
+        checklistFolder = state.folder;
+        if (workspaceState && state.folder) {
+          const ws = workspaceState.getProject(state.folder);
+          switchMode(ws.reviewMode || 'overall', { persist: false });
+        }
+        findingsView.reloadFromStore(state.folder);
+      }
+      if (historyPanel.style.display !== 'none') {
+        historyView.load();
+      }
+      if (mdBox.firstChild && !pendingRun) {
         setStatus(el('div', { class: 'empty-hint' },
           '改动已更新，以下分析结果可能已过期，可点击「开始 AI 分析」重新生成'));
       }
@@ -1111,11 +267,16 @@ export default {
       if (!file) return;
       state.pendingAnalyzeFile = null;
       switchMode('files');
-      const trigger = fileAnalyzeTriggers.get(file);
+      const trigger = fileCards.fileAnalyzeTriggers.get(file);
       if (trigger) trigger();
     });
 
+    if (workspaceState && state.folder) {
+      const ws = workspaceState.getProject(state.folder);
+      switchMode(ws.reviewMode || 'overall', { persist: false });
+    }
     refresh();
-    renderFilesPanel();
+    fileCards.renderFilesPanel();
+    estimate.scheduleEstimateRefresh();
   },
 };
