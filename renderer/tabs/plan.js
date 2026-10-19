@@ -1,23 +1,9 @@
+import { formatStats, copyMarkdown } from '../lib/aiShared.js';
 // 需求方案：上传 PRD + 设计稿 → AI 生成技术方案，作为后续评审依据
 import { renderMarkdown, extractH2Titles } from '../markdown.js';
 import { createStreamPreview } from '../lib/streamPreview.js';
-import { createLoadingNode } from '../lib/loading.js';
-
-const BACKEND_LABELS = { api: 'API', opencode: 'OpenCode', kimi: 'Kimi CLI', codex: 'Codex' };
-
-function formatStats(stats) {
-  const parts = [];
-  if (stats && stats.backend) parts.push(BACKEND_LABELS[stats.backend] || stats.backend);
-  if (stats && stats.model) parts.push(stats.model);
-  if (stats && stats.backend) parts.push(stats.effort ? `思考 ${stats.effort}` : '默认强度');
-  if (stats && stats.promptTokens != null && stats.completionTokens != null) {
-    parts.push(`${(stats.promptTokens + stats.completionTokens).toLocaleString()} tokens`);
-  }
-  if (stats && stats.durationMs != null) {
-    parts.push(`${(stats.durationMs / 1000).toFixed(1)}s`);
-  }
-  return parts.join(' · ');
-}
+import { createRunStatus } from '../lib/runStatus.js';
+import { confirmDialog } from '../lib/dialog.js';
 
 const readAsText = (file) => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -84,12 +70,14 @@ function renderPlanReader(el, mountNode, markdown) {
   reader.appendChild(body);
   mountNode.appendChild(reader);
 
+  let dispose = () => {};
   if (count > 1) {
     // IO 的 root 用章节内容的实际滚动祖先，rootMargin 相对它设窄带（顶部 10% ~ 20%）
     const scroller = findScrollParent(reader);
+    let disposed = false;
     const observer = new IntersectionObserver((entries) => {
-      if (!reader.isConnected) {
-        observer.disconnect();
+      if (disposed || !reader.isConnected) {
+        dispose();
         return;
       }
       for (const entry of entries) {
@@ -107,7 +95,7 @@ function renderPlanReader(el, mountNode, markdown) {
     /** @type {ReturnType<typeof setTimeout> | null} */
     let scrollTimer = null;
     const onScrollEnd = () => {
-      if (!reader.isConnected) return;
+      if (disposed || !reader.isConnected) return;
       // 点击跳转期间保持点击目标，不被中途章节覆盖
       if (Date.now() < lockUntil) { setActive(lockIdx); return; }
       // 已滚到底（末章内容太短滚不进窄带）时直接高亮末章
@@ -130,16 +118,26 @@ function renderPlanReader(el, mountNode, markdown) {
       if (!inBand && fallback >= 0) setActive(fallback);
     };
     const onScroll = () => {
-      if (!reader.isConnected) {
-        scrollTarget.removeEventListener('scroll', onScroll);
+      if (disposed || !reader.isConnected) {
+        dispose();
         return;
       }
       if (scrollTimer) clearTimeout(scrollTimer);
       scrollTimer = setTimeout(onScrollEnd, 120);
     };
     scrollTarget.addEventListener('scroll', onScroll, { passive: true });
+    dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      if (scrollTimer) {
+        clearTimeout(scrollTimer);
+        scrollTimer = null;
+      }
+      observer.disconnect();
+      scrollTarget.removeEventListener('scroll', onScroll);
+    };
   }
-  return reader;
+  return { reader, dispose };
 }
 
 export default {
@@ -273,13 +271,30 @@ export default {
     let running = false;
     /** @type {(() => void) | null} */
     let activeCancel = null;
+    /** @type {(() => void) | null} */
+    let resultReaderDispose = null;
+    /** @type {Array<() => void>} */
+    const listReaderDisposers = [];
+
+    const clearResultBox = () => {
+      if (resultReaderDispose) {
+        resultReaderDispose();
+        resultReaderDispose = null;
+      }
+      resultBox.textContent = '';
+    };
+
+    const clearListReaders = () => {
+      while (listReaderDisposers.length) {
+        const fn = listReaderDisposers.pop();
+        if (typeof fn === 'function') fn();
+      }
+    };
 
     const setStatus = (node) => {
       statusBox.textContent = '';
       if (node) statusBox.appendChild(node);
     };
-
-    const loadingNode = () => createLoadingNode(el, ctx, 'AI 正在生成技术方案，请稍候…');
 
     const refreshButtons = () => {
       const noFolder = !state.folder;
@@ -318,6 +333,7 @@ export default {
         thumb.appendChild(el('img', { src: img.dataUrl, alt: img.name }));
         thumb.appendChild(el('button', {
           class: 'plan-thumb-del', type: 'button', title: '删除该设计稿',
+          'aria-label': `删除设计稿 ${img.name}`,
           onClick: () => removeImage(img.name),
         }, '×'));
         thumb.appendChild(el('div', { class: 'plan-thumb-name' }, img.name));
@@ -397,7 +413,12 @@ export default {
       });
       const delBtn = el('button', { class: 'btn plan-del-btn', type: 'button' }, '删除');
       delBtn.addEventListener('click', async () => {
-        if (!confirm(`确定删除方案「${detail.title}」？该操作不可恢复`)) return;
+        if (!(await confirmDialog({
+          title: '删除需求方案',
+          message: `确定删除方案「${detail.title}」？该操作不可恢复`,
+          confirmText: '确认删除',
+          danger: true,
+        }))) return;
         try {
           await api.deletePlan(state.folder, detail.id);
           bus.dispatchEvent(new CustomEvent('plan:changed'));
@@ -413,16 +434,15 @@ export default {
       if (detail.planMarkdown) {
         const copyPlanBtn = el('button', { class: 'btn', type: 'button' }, '复制方案');
         copyPlanBtn.addEventListener('click', () => {
-          navigator.clipboard.writeText(detail.planMarkdown)
-            .then(() => toast('已复制到剪贴板'))
-            .catch(() => { /* 剪贴板不可用时静默 */ });
+          copyMarkdown(detail.planMarkdown, toast);
         });
         actions.appendChild(copyPlanBtn);
       }
       actions.appendChild(delBtn);
       body.appendChild(actions);
       if (detail.planMarkdown) {
-        renderPlanReader(el, body, detail.planMarkdown);
+        const { dispose } = renderPlanReader(el, body, detail.planMarkdown);
+        listReaderDisposers.push(dispose);
       } else {
         body.appendChild(el('div', { class: 'empty-hint' },
           '该方案尚未生成技术方案，可点击「载入编辑」后生成'));
@@ -430,6 +450,7 @@ export default {
     };
 
     const loadList = async () => {
+      clearListReaders();
       listBox.textContent = '';
       if (!state.folder) {
         listBox.appendChild(emptyState('请先选择项目文件夹', '选择一个项目后，即可基于 PRD 生成技术方案',
@@ -491,7 +512,7 @@ export default {
         });
         editing = { planId: meta.id, title, prdFileName: file.name, prdText, images: [] };
         titleInput.value = title;
-        resultBox.textContent = '';
+        clearResultBox();
         setStatus(null);
         renderEditing();
         loadList();
@@ -512,8 +533,11 @@ export default {
         toast('请输入完整的 http/https 链接', 'error');
         return;
       }
-      if (editing && !confirm(
-        '将用抓取的 PRD 文本新建方案并切换为当前编辑（原方案保留在历史列表，设计稿会迁移），继续？')) {
+      if (editing && !(await confirmDialog({
+        title: '新建方案',
+        message: '将用抓取的 PRD 文本新建方案并切换为当前编辑（原方案保留在历史列表，设计稿会迁移），继续？',
+        confirmText: '继续',
+      }))) {
         return;
       }
       prdUrlBtn.disabled = true;
@@ -523,11 +547,11 @@ export default {
         const { title: pageTitle, text } = await api.fetchPrdFromUrl(url);
         if (!text || !text.trim()) throw new Error('未抓取到正文内容');
         let hostname = url;
-        try { hostname = new URL(url).hostname; } catch { /* 保底用原始 URL */ }
+      try { hostname = new URL(url).hostname; } catch { console.warn('方案链接格式无效'); }
         const title = titleInput.value.trim() || pageTitle || hostname;
         await recreatePlanWithText(text, title, hostname);
         prdUrlInput.value = '';
-        resultBox.textContent = '';
+        clearResultBox();
         setStatus(null);
         toast(`已导入 PRD「${title}」`);
       } catch (err) {
@@ -551,7 +575,11 @@ export default {
         toast('内容未修改');
         return;
       }
-      if (!confirm('将以编辑后的 PRD 文本新建方案（原方案保留在历史列表，设计稿会迁移到新方案），继续？')) {
+      if (!(await confirmDialog({
+        title: '保存为新方案',
+        message: '将以编辑后的 PRD 文本新建方案（原方案保留在历史列表，设计稿会迁移到新方案），继续？',
+        confirmText: '保存',
+      }))) {
         return;
       }
       prdSaveBtn.disabled = true;
@@ -636,6 +664,12 @@ export default {
 
     const removeImage = async (name) => {
       if (!editing || !state.folder) return;
+      if (!(await confirmDialog({
+        title: '删除设计稿',
+        message: `确定删除设计稿「${name}」？该操作不可恢复`,
+        confirmText: '确认删除',
+        danger: true,
+      }))) return;
       try {
         await api.removePlanImage({ folder: state.folder, planId: editing.planId, name });
         editing.images = editing.images.filter((img) => img.name !== name);
@@ -651,16 +685,26 @@ export default {
       if (running || !state.folder || !editing || !editing.prdText) return;
       running = true;
       refreshButtons();
-      resultBox.textContent = '';
-      setStatus(loadingNode());
+      clearResultBox();
       const runId = `run-${Date.now()}`;
+      activeCancel = () => {
+        if (typeof api.cancelRun === 'function') api.cancelRun(runId).catch((err) => toast('终止失败：' + errText(err), 'error'));
+      };
+      const planRunStatus = createRunStatus({
+        el,
+        api,
+        bus,
+        runId,
+        label: 'AI 正在生成技术方案，请稍候…',
+        showDetails: () => ctx.showRunDetails(),
+        onCancel: activeCancel,
+        toast,
+        errText,
+      });
+      setStatus(planRunStatus.root);
       const stream = createStreamPreview({
         el, api, runId, parent: resultBox, className: 'stream-preview plan-stream',
       });
-      activeCancel = () => {
-        if (typeof api.cancelRun === 'function') api.cancelRun(runId).catch(() => {});
-      };
-      // 运行中主按钮变为「终止运行」（refreshButtons 会禁用它，这里显式重启用）
       genBtn.disabled = false;
       genBtn.textContent = '终止运行';
       genBtn.classList.add('btn-danger');
@@ -672,14 +716,13 @@ export default {
           runId,
         });
         setStatus(null);
-        resultBox.textContent = '';
-        renderPlanReader(el, resultBox, markdown);
+        clearResultBox();
+        const { dispose } = renderPlanReader(el, resultBox, markdown);
+        resultReaderDispose = dispose;
         resultBox.appendChild(el('div', { class: 'ai-stats' }, formatStats(stats)));
         const copyBtnEl = el('button', { class: 'btn', type: 'button' }, '复制');
         copyBtnEl.addEventListener('click', () => {
-          navigator.clipboard.writeText(markdown)
-            .then(() => toast('已复制到剪贴板'))
-            .catch(() => { /* 剪贴板不可用时静默 */ });
+          copyMarkdown(markdown, toast);
         });
         const btnGroup = el('div', { class: 'export-group' });
         btnGroup.appendChild(copyBtnEl);
@@ -691,10 +734,16 @@ export default {
         if (errText(err).includes('已被用户终止')) {
           setStatus(el('div', { class: 'empty-hint' }, '已终止，可点击「生成方案」重新开始'));
         } else {
-          setStatus(el('div', { class: 'error-text' }, `生成失败：${errText(err)}`));
+          const errBox = el('div', { class: 'review-error' });
+          errBox.appendChild(el('div', { class: 'error-text' }, `生成失败：${errText(err)}`));
+          const retry = el('button', { class: 'btn', type: 'button' }, '重试');
+          retry.addEventListener('click', () => run());
+          errBox.appendChild(retry);
+          setStatus(errBox);
           notify('技术方案生成失败', errText(err));
         }
       } finally {
+        planRunStatus.dispose();
         if (stream.unsubscribe) stream.unsubscribe();
         stream.streamBox.remove();
         activeCancel = null;
@@ -720,7 +769,7 @@ export default {
       if (state.folder !== knownFolder) {
         knownFolder = state.folder;
         clearEditing();
-        resultBox.textContent = '';
+        clearResultBox();
         setStatus(null);
       }
       loadList();
