@@ -1,8 +1,11 @@
 const { execFile } = require('child_process');
 const { promisify } = require('util');
-const fs = require('fs');
 const path = require('path');
+const { readRepoFile } = require('./safeRead');
 const fileCache = require('./fileContentCache');
+const { captureSnapshot } = require('./reviewSnapshot');
+const { excludedBy } = require('./globMatch');
+const { rootIgnorePatterns } = require('./effectiveRules');
 
 const execFileAsync = promisify(execFile);
 
@@ -34,30 +37,80 @@ async function getChanges(folder, options) {
     throw new Error('所选文件夹不是 Git 仓库，无法分析改动');
   }
 
+  // 外部 ref 先解析为完整 SHA，后续 diff/show 不再接受选项或路径歧义。
+  const resolve = async (ref) => {
+    if (ref.startsWith('-') || /[\0\r\n]/.test(ref)) throw new Error('无效的 Git 引用');
+    return (await git(folder, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])).trim();
+  };
+  const headSha = await resolve('HEAD').catch(() => null);
+  const rangeMatch = base?.match(/^(.+?)(\.{2,3})(.+)$/);
+  let revisionRange;
+  /** @type {string|null} */
+  let baseSha = null;
+  if (base) {
+    try {
+      if (rangeMatch) {
+        const fromSha = await resolve(rangeMatch[1]);
+        const toSha = await resolve(rangeMatch[3]);
+        revisionRange = { fromSha, toSha, operator: rangeMatch[2] };
+        baseSha = rangeMatch[2] === '...' ? (await git(folder, ['merge-base', fromSha, toSha])).trim() : fromSha;
+      } else baseSha = await resolve(base);
+    } catch { throw new Error(`无法生成对比：'${base}' 不是有效的分支或提交`); }
+  }
+  const resolvedCommits = commits ? await Promise.all(commits.map(async (ref) => {
+    const sha = await resolve(ref);
+    const parents = (await git(folder, ['show', '-s', '--format=%P', sha, '--'])).trim();
+    return { sha, parentShas: parents ? parents.split(/\s+/) : [] };
+  })) : [];
+  let mode = options?.mode;
+  if (mode !== undefined && !['uncommitted', 'branch', 'ref', 'commits', 'staged', 'unstaged', 'untracked'].includes(mode)) throw new Error('无效的改动模式');
+  if (!mode) {
+    const localBranch = base && !base.startsWith('-') ? await git(folder, ['show-ref', '--verify', '--hash', base.startsWith('refs/heads/') ? base : `refs/heads/${base}`]).then(() => true, () => false) : false;
+    mode = commits ? 'commits' : base ? (localBranch ? 'branch' : 'ref') : 'uncommitted';
+  }
+  if ((mode === 'commits' && !commits) || (['branch', 'ref'].includes(mode) && !base) || (['uncommitted', 'staged', 'unstaged', 'untracked'].includes(mode) && (base || commits)) || (mode !== 'commits' && commits)) throw new Error('改动模式与 base/commits 不一致');
+
   let branch = '';
   try {
-    branch = (await git(folder, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    branch = (await git(folder, headSha ? ['rev-parse', '--abbrev-ref', 'HEAD'] : ['symbolic-ref', '--short', 'HEAD'])).trim();
   } catch {
     branch = '';
   }
 
   let diffText = '';
+  let commitRange = false;
   if (commits) {
-    // 查看指定提交：每个 commit 各自 git show（纯 diff），拼接后统一解析
     try {
-      const parts = await Promise.all(commits.map((sha) =>
-        git(folder, ['show', sha, '--unified=3', '--no-color', '--format='])));
-      diffText = parts.join('\n');
+      const selected = new Map(resolvedCommits.map((c) => [c.sha, c]));
+      const parents = new Set(resolvedCommits.map((c) => c.parentShas[0]));
+      const newest = resolvedCommits.filter((c) => !parents.has(c.sha));
+      const chain = [];
+      let current = newest.length === 1 ? newest[0] : undefined;
+      while (current && !chain.includes(current)) {
+        chain.push(current);
+        current = selected.get(current.parentShas[0]);
+      }
+      commitRange = selected.size === resolvedCommits.length && chain.length === resolvedCommits.length;
+      if (commitRange) {
+        const oldest = chain[chain.length - 1];
+        const parent = oldest.parentShas[0] || (await git(folder, ['hash-object', '-t', 'tree', '/dev/null'])).trim();
+        baseSha = parent;
+        diffText = await git(folder, ['diff', parent, chain[0].sha, '--unified=3', '--no-color', '--']);
+      } else {
+        const parts = await Promise.all(resolvedCommits.map(({ sha }) =>
+          git(folder, ['show', '--unified=3', '--no-color', '--format=', sha, '--'])));
+        diffText = parts.join('\n');
+      }
     } catch {
       throw new Error('无法生成提交对比：包含无效的 commit');
     }
   } else if (base) {
     try {
-      diffText = await git(folder, ['diff', base, '--unified=3', '--no-color', '--']);
+      diffText = await git(folder, ['diff', baseSha, ...(revisionRange ? [revisionRange.toSha] : []), '--unified=3', '--no-color', '--']);
     } catch {
       throw new Error(`无法生成对比：'${base}' 不是有效的分支或提交`);
     }
-  } else {
+  } else if (mode !== 'untracked') {
     let hasHead = true;
     try {
       await git(folder, ['rev-parse', '--verify', 'HEAD']);
@@ -67,7 +120,7 @@ async function getChanges(folder, options) {
     try {
       diffText = await git(
         folder,
-        hasHead
+        mode === 'staged' ? ['diff', '--cached', '--unified=3', '--no-color', '--'] : mode === 'unstaged' ? ['diff', '--unified=3', '--no-color', '--'] : hasHead
           ? ['diff', 'HEAD', '--unified=3', '--no-color']
           : ['diff', '--cached', '--unified=3', '--no-color']
       );
@@ -79,26 +132,29 @@ async function getChanges(folder, options) {
   }
 
   const files = parseDiff(diffText);
+  const skippedUntracked = [];
 
-  if (!base && !commits) {
+  if (mode === 'uncommitted' || mode === 'untracked') {
     let statusOut = '';
     try {
-      statusOut = await git(folder, ['status', '--porcelain']);
+      statusOut = await git(folder, ['status', '--porcelain', '-z', '--untracked-files=all']);
     } catch {
       statusOut = '';
     }
-    for (const line of statusOut.split('\n')) {
+    for (const line of statusOut.split('\0')) {
       if (!line.startsWith('??')) continue;
-      let rel = line.slice(3).trim();
-      if (rel.startsWith('"') && rel.endsWith('"')) rel = rel.slice(1, -1);
+      const rel = line.slice(3);
       if (!rel || files.some((f) => f.path === rel)) continue;
-      const untracked = buildUntrackedFile(folder, rel);
+      const untracked = buildUntrackedFile(folder, rel, skippedUntracked);
       if (untracked) files.push(untracked);
     }
   }
 
   const limited = files.slice(0, MAX_FILES);
+  const patterns = [...await require('./settings').getExcludePatterns(), ...rootIgnorePatterns(folder)];
   for (const file of limited) {
+    const pattern = excludedBy(file.path, patterns);
+    if (pattern) { file.excluded = true; file.excludedBy = pattern; }
     try {
       file.classes = extractClasses(folder, file);
     } catch {
@@ -107,7 +163,14 @@ async function getChanges(folder, options) {
     delete file._content;
   }
 
-  return { branch, base, commits: commits || null, files: limited };
+  const semantics = commits ? (commitRange ? 'commit-range' : 'concatenated-show') : revisionRange ? 'commit-range' : base ? 'base-to-worktree'
+    : mode === 'staged' ? 'head-to-index' : mode === 'unstaged' ? 'index-to-worktree' : mode === 'untracked' ? 'untracked-only' : 'head-to-worktree';
+  const snapshot = captureSnapshot(folder, limited, { mode, requestedBase: base, branch: branch || null, headSha, baseSha,
+    commits: resolvedCommits, semantics, ...(revisionRange ? { revisionRange } : {}), ...(commits && !commitRange ? { nonContiguous: true } : {}) });
+  return { branch, base, commits: commits || null, files: limited.map((f, i) => ({ ...f, diffFingerprint: snapshot.files[i].diffFingerprint })),
+    snapshotId: snapshot.snapshotId, source: snapshot.source, diffFingerprint: snapshot.diffFingerprint,
+    limits: { maxFiles: MAX_FILES, totalFiles: files.length, omittedFiles: files.slice(MAX_FILES, MAX_FILES + 50).map((f) => f.path),
+      truncatedFiles: limited.filter((f) => f.truncated).map((f) => ({ path: f.path, shownLines: f.hunks.reduce((n, h) => n + h.lines.length, 0) })), skippedUntracked } };
 }
 
 async function getCommits(folder, limit = 50) {
@@ -158,14 +221,16 @@ async function getBranches(folder) {
   return { current, branches };
 }
 
-function buildUntrackedFile(folder, rel) {
+/** @param {string} folder @param {string} rel @param {Array<{path:string,reason:'too-large'|'binary'|'unreadable'}>} skipped */
+function buildUntrackedFile(folder, rel, skipped) {
   let buf;
   try {
-    buf = fs.readFileSync(path.join(folder, rel));
-  } catch {
+    buf = readRepoFile(folder, rel, { maxBytes: MAX_FILE_BYTES });
+  } catch (error) {
+    skipped.push({ path: rel, reason: error.code === 'ERR_REPO_FILE_TOO_LARGE' ? 'too-large' : 'unreadable' });
     return null;
   }
-  if (buf.length > MAX_FILE_BYTES || buf.includes(0)) return null;
+  if (buf.includes(0)) { skipped.push({ path: rel, reason: 'binary' }); return null; }
   const content = buf.toString('utf8');
   const textLines = content.split('\n');
   if (textLines.length && textLines[textLines.length - 1] === '') textLines.pop();
@@ -179,7 +244,7 @@ function buildUntrackedFile(folder, rel) {
             oldLines: 0,
             newStart: 1,
             newLines: textLines.length,
-            lines: textLines.map((c, i) => ({
+             lines: textLines.slice(0, MAX_HUNK_LINES).map((c, i) => ({
               type: 'add',
               content: c,
               oldLine: null,
@@ -187,7 +252,7 @@ function buildUntrackedFile(folder, rel) {
             })),
           },
         ];
-  return { path: rel, status: 'added', hunks, classes: [], _content: content };
+  return { path: rel, status: 'added', hunks, classes: [], _content: content, resource: isResourcePath(rel), truncated: textLines.length > MAX_HUNK_LINES };
 }
 
 function stripPrefix(p) {
@@ -215,10 +280,15 @@ function stripPrefix(p) {
 /**
  * @typedef {object} DiffFile
  * @property {string} path
+ * @property {string} [oldPath]
  * @property {string} status
  * @property {DiffHunk[]} hunks
  * @property {string[]} classes
  * @property {boolean} [resource]
+ * @property {boolean} [excluded]
+ * @property {string} [excludedBy]
+ * @property {boolean} [truncated]
+ * @property {string} [diffFingerprint]
  */
 
 // 资源文件：图片/字体/媒体/资源目录等，不参与 AI 评审
@@ -264,6 +334,7 @@ function parseDiff(text) {
     }
     if (!hunk && raw.startsWith('rename from ')) {
       cur.status = 'renamed';
+      cur.oldPath = raw.slice(12).trim();
       continue;
     }
     if (!hunk && raw.startsWith('rename to ')) {
@@ -303,6 +374,7 @@ function parseDiff(text) {
 
     if (lineCount >= MAX_HUNK_LINES) {
       truncated = true;
+      cur.truncated = true;
       continue;
     }
     const t = raw[0];

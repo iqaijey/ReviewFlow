@@ -3,6 +3,15 @@ const assert = require('node:assert');
 
 const { parseDiff } = require('../../main/git');
 
+test('用户 base/commit 以 - 开头时拒绝，不能作为 Git 选项执行', async () => {
+  const { getChanges } = require('../../main/git');
+  const root = require('path').resolve(__dirname, '../..');
+  for (const ref of ['--output=/tmp/injection', '-n1', '--help']) {
+    await assert.rejects(getChanges(root, { base: ref }), /不是有效的分支或提交/);
+    await assert.rejects(getChanges(root, { commits: [ref] }), /无效的 Git 引用/);
+  }
+});
+
 test('parseDiff 解析修改文件：路径、状态、hunk 与行号', () => {
   const diff = [
     'diff --git a/src/a.js b/src/a.js',
@@ -72,6 +81,13 @@ test('parseDiff 解析重命名文件', () => {
   ].join('\n'));
   assert.strictEqual(files[0].status, 'renamed');
   assert.strictEqual(files[0].path, 'new.txt');
+  assert.strictEqual(files[0].oldPath, 'old.txt');
+});
+
+test('parseDiff 对超过现有限制的行显式标记截断', () => {
+  const files = parseDiff(['diff --git a/a.js b/a.js', '--- a/a.js', '+++ b/a.js', '@@ -0,0 +1,3001 @@', ...Array(3001).fill('+line')].join('\n'));
+  assert.strictEqual(files[0].truncated, true);
+  assert.strictEqual(files[0].hunks[0].lines.length, 3000);
 });
 
 test('parseDiff 多文件与省略行数的 hunk 头', () => {
