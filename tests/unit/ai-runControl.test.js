@@ -4,6 +4,67 @@ const assert = require('node:assert');
 const state = require('../../main/ai/state');
 const runControl = require('../../main/ai/runControl');
 
+test('运行状态变更合并推送最新列表，最后一次清理不会遗漏', (t) => {
+  t.mock.timers.enable(['setTimeout']);
+  const snapshots = [];
+  const unsubscribe = runControl.onRunsChanged(() => snapshots.push(runControl.getRuns()));
+  t.after(unsubscribe);
+  const lane = runControl.ensureLane('push');
+  lane.batchRunActive = true;
+  runControl.touchLane(lane);
+  runControl.pauseRun('push');
+  t.mock.timers.tick(99);
+  assert.strictEqual(snapshots.length, 0);
+  t.mock.timers.tick(1);
+  assert.strictEqual(snapshots.length, 1);
+  assert.strictEqual(snapshots[0][0].runId, 'push');
+
+  lane.batchRunActive = false;
+  lane.pausedState = { kind: 'review', nextIndex: 1, batches: [[]], pausedAt: 1 };
+  runControl.touchLane(lane);
+  t.mock.timers.tick(100);
+  assert.strictEqual(snapshots[1][0].paused, true);
+  runControl.cancelRun('push');
+  t.mock.timers.tick(100);
+  assert.deepStrictEqual(snapshots[2], []);
+  t.mock.timers.tick(1000);
+  assert.strictEqual(snapshots.length, 3);
+});
+
+test('持续变更不会饿死通知，窗口尾部变化仍推送', (t) => {
+  t.mock.timers.enable(['setTimeout']);
+  let calls = 0;
+  const unsubscribe = runControl.onRunsChanged(() => { calls += 1; });
+  t.after(unsubscribe);
+  const lane = runControl.ensureLane('busy-push');
+  for (let i = 0; i < 5; i += 1) {
+    t.mock.timers.tick(20);
+    runControl.touchLane(lane);
+  }
+  assert.strictEqual(calls, 1);
+  t.mock.timers.tick(100);
+  assert.strictEqual(calls, 2);
+});
+
+test('取消订阅不影响其他监听者，全部取消后不再推送', (t) => {
+  t.mock.timers.enable(['setTimeout']);
+  let first = 0;
+  let second = 0;
+  const offFirst = runControl.onRunsChanged(() => { first += 1; });
+  const offSecond = runControl.onRunsChanged(() => { second += 1; });
+  t.after(offFirst);
+  t.after(offSecond);
+  runControl.ensureLane('unsubscribe');
+  offFirst();
+  t.mock.timers.tick(100);
+  assert.strictEqual(first, 0);
+  assert.strictEqual(second, 1);
+  runControl.pauseRun('unsubscribe');
+  offSecond();
+  t.mock.timers.tick(100);
+  assert.strictEqual(second, 1);
+});
+
 // state.lanes 是共享可变 Map，每个用例后清空，避免互相污染
 afterEach(() => {
   state.lanes.clear();
@@ -117,13 +178,14 @@ test('pauseRun 未知 runId 返回 false；无参不再回退跑道，直接返�
 
 // ---------- cancelRun ----------
 
-test('cancelRun 无取消句柄时返回 false，并清掉该跑道暂停状态', () => {
+test('cancelRun 已暂停跑道返回 true，清掉检查点并回收跑道', () => {
   const lane = runControl.ensureLane('r1');
   lane.pausedState = { kind: 'review', nextIndex: 1, batches: [], pausedAt: 1 };
   lane.pauseRequested = true;
-  assert.strictEqual(runControl.cancelRun('r1'), false);
+  assert.strictEqual(runControl.cancelRun('r1'), true);
   assert.strictEqual(lane.pausedState, null);
   assert.strictEqual(lane.pauseRequested, false);
+  assert.strictEqual(state.lanes.has('r1'), false);
 });
 
 test('cancelRun 调用对应跑道取消句柄并置空，跑道互不影响', () => {

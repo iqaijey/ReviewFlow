@@ -1,5 +1,31 @@
 const state = require('./state');
 
+/** @type {Set<() => void>} */
+const runsListeners = new Set();
+/** @type {ReturnType<typeof setTimeout> | null} */
+let runsTimer = null;
+
+function notifyRunsChanged() {
+  if (runsTimer || !runsListeners.size) return;
+  // 固定窗口合并，持续变化不延期，尾部始终读取最新状态。
+  runsTimer = setTimeout(() => {
+    runsTimer = null;
+    for (const listener of runsListeners) listener();
+  }, 100);
+}
+
+/** @param {() => void} listener */
+function onRunsChanged(listener) {
+  runsListeners.add(listener);
+  return () => {
+    runsListeners.delete(listener);
+    if (!runsListeners.size && runsTimer) {
+      clearTimeout(runsTimer);
+      runsTimer = null;
+    }
+  };
+}
+
 // runId 规范化：渲染进程传入的非空 runId 直接沿用（其 chunk 过滤依赖该 id），
 // 未传或与活跃跑道冲突时由主进程生成唯一 id
 let runSeq = 0;
@@ -26,6 +52,7 @@ function ensureLane(runId) {
       lastActive: Date.now(),
     };
     state.lanes.set(runId, lane);
+    notifyRunsChanged();
   }
   return lane;
 }
@@ -40,12 +67,21 @@ function resolveLane(runId) {
   return latest;
 }
 
+/** @param {string} runId @returns {string} */
+function ownerRunId(runId) {
+  const parentRunId = state.lanes.get(runId)?.parentRunId;
+  if (parentRunId) return parentRunId;
+  for (const [id, lane] of state.lanes) if (lane.childRunIds?.includes(runId)) return id;
+  return runId;
+}
+
 // 跑道完全空闲（无运行/无取消句柄/无暂停态/非分批）时回收，避免 Map 泄漏
 function maybeCleanupLane(runId) {
   const lane = state.lanes.get(runId);
   if (lane && !lane.currentRun && !lane.currentCancel && !lane.pausedState && !lane.batchRunActive) {
     state.lanes.delete(runId);
   }
+  notifyRunsChanged();
 }
 
 // 单条跑道的对外展示态：运行中 > 已暂停 > 批间占位（与旧单跑道 getCurrentRun 分支顺序一致）
@@ -63,7 +99,7 @@ function runInfoFor(lane, runId) {
     };
   }
   // 分批循环的批间微间隙：上一批 currentRun 已清空、下一批尚未登记。
-  // 返回占位运行态，避免「运行详情」轮询在这一瞬落入「无运行」分支并停掉刷新。
+  // 返回占位运行态，避免批间切换被误判为已结束。
   if (lane.batchRunActive) {
     return {
       kind: '分批运行',
@@ -84,13 +120,13 @@ function runInfoFor(lane, runId) {
 }
 
 // 全部跑道的展示态（最近活跃在前）。
-// promptText 体积大（含完整 diff）且运行详情卡片只需展示一次，轮询响应里剥离，
+// promptText 体积大（含完整 diff）且运行详情卡片只需展示一次，列表里剥离，
 // 由渲染端首次需要时走 getRunPrompt 按需获取
 function getRuns() {
   const out = [];
   for (const [runId, lane] of state.lanes) {
     const info = runInfoFor(lane, runId);
-    if (info) out.push({ lastActive: lane.lastActive, info });
+    if (info) out.push({ lastActive: lane.lastActive, info: { ...info, ...(lane.parentRunId ? { parentRunId: lane.parentRunId } : {}) } });
   }
   out.sort((a, b) => b.lastActive - a.lastActive);
   return out.map((x) => {
@@ -115,26 +151,41 @@ function getCurrentRun() {
 function pauseRun(runId) {
   // 渲染端始终传 runId；缺省时不再回退最近活跃跑道，避免多跑道并发时误操作
   if (typeof runId !== 'string' || !runId) return false;
-  const lane = resolveLane(runId);
+  const lane = resolveLane(ownerRunId(runId));
   if (!lane) return false;
   lane.pauseRequested = true;
+  for (const child of lane.childRunIds || []) {
+    const childLane = resolveLane(child);
+    if (childLane) childLane.pauseRequested = true;
+  }
+  notifyRunsChanged();
   return lane.batchRunActive;
 }
 
 // 终止指定运行：API 中断 fetch，CLI 杀进程组；同时清掉该跑道的暂停状态
 function cancelRun(runId) {
   if (typeof runId !== 'string' || !runId) return false;
+  return cancelLane(ownerRunId(runId));
+}
+
+/** @param {string} runId */
+function cancelLane(runId) {
   const lane = resolveLane(runId);
   if (!lane) return false;
+  const hadCheckpoint = Boolean(lane.pausedState);
+  lane.cancelled = true;
+  for (const child of lane.childRunIds || []) cancelLane(child);
   lane.pausedState = null;
   lane.pauseRequested = false;
+  if (hadCheckpoint) require('../reviewSnapshot').releaseRunSnapshots(runId);
+  notifyRunsChanged();
   if (lane.currentCancel) {
     lane.currentCancel();
     lane.currentCancel = null;
     return true;
   }
   maybeCleanupLane(runId);
-  return false;
+  return hadCheckpoint || lane.batchRunActive;
 }
 
 // 流式输出的推送方：main.js 注册，fn(runId, 累计文本) 转发给渲染进程
@@ -165,12 +216,16 @@ function timeoutMs(cfg) {
 // 跑道活跃时间戳更新点：登记运行详情、进入暂停、分批激活时调用
 function touchLane(lane) {
   lane.lastActive = Date.now();
+  notifyRunsChanged();
 }
 
 module.exports = {
+  onRunsChanged,
+  notifyRunsChanged,
   ensureRunId,
   ensureLane,
   resolveLane,
+  ownerRunId,
   maybeCleanupLane,
   touchLane,
   getRuns,

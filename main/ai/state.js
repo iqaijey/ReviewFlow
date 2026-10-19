@@ -7,6 +7,7 @@
  * @typedef {object} PausedBatchState
  * @property {string} kind
  * @property {any} [cfg]
+ * @property {any} [multi]
  * @property {number} nextIndex
  * @property {any[][]} batches
  * @property {number} [pausedAt]
@@ -26,8 +27,11 @@
  * @property {any} currentRun
  * @property {null | (() => void)} currentCancel
  * @property {boolean} pauseRequested
+ * @property {boolean} [cancelled]
  * @property {PausedBatchState | null} pausedState
  * @property {boolean} batchRunActive
+ * @property {string[]} [childRunIds]
+ * @property {string} [parentRunId]
  * @property {number} lastActive
  */
 
