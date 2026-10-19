@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { app } = require('electron');
 
 const RELEASE_API = 'https://api.github.com/repos/iqaijey/ReviewFlow/releases/latest';
@@ -22,10 +23,14 @@ function compareVersions(a, b) {
 // 从 latest-mac.yml 提取版本号和 dmg 文件名（简易文本解析，避免引入 yaml 依赖）
 function parseLatestYml(text) {
   const versionMatch = text.match(/^version:\s*(\S+)/m);
-  const dmgMatch = text.match(/url:\s*(\S+-arm64\.dmg)/);
+  const entries = text.split(/^\s*-\s+url:\s*/m).slice(1);
+  const selected = entries.find((entry) => /^\S+-arm64\.dmg\s*$/m.test(entry.split('\n')[0]));
+  const dmgFile = selected ? selected.split('\n')[0].trim() : '';
+  const digest = selected?.match(/^\s+sha512:\s*([A-Za-z0-9+/]+={0,2})\s*$/m)?.[1] || '';
   return {
     version: versionMatch ? versionMatch[1] : '',
-    dmgFile: dmgMatch ? dmgMatch[1] : '',
+    dmgFile,
+    sha512: digest && Buffer.from(digest, 'base64').length === 64 ? digest : '',
   };
 }
 
@@ -90,16 +95,64 @@ async function checkForUpdates() {
 // 下载地址只允许来自本项目 GitHub Releases，防止渲染层传入任意 URL 后被下载并 shell.openPath
 const DOWNLOAD_URL_PREFIX = 'https://github.com/iqaijey/ReviewFlow/releases/';
 
+/** @param {string} file @param {string} expected */
+async function verifiedDownload(file, expected) {
+  try {
+    const stat = await fs.promises.lstat(file);
+    if (!stat.isFile() || stat.size > 1024 ** 3) return false;
+    const digest = crypto.createHash('sha512');
+    for await (const chunk of fs.createReadStream(file)) digest.update(chunk);
+    return digest.digest('base64') === expected;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/** @template T @param {(signal:AbortSignal, received:()=>void)=>Promise<T>} operation */
+async function withDownloadStallTimeout(operation) {
+  const controller = new AbortController();
+  let timer;
+  let received;
+  const timeout = new Promise((_, reject) => {
+    received = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const error = new Error('下载停滞：60 秒未收到数据');
+        reject(error);
+        controller.abort(error);
+      }, 60000);
+    };
+    received();
+  });
+  try { return await Promise.race([operation(controller.signal, received), timeout]); }
+  finally { clearTimeout(timer); }
+}
+
 async function downloadUpdate(dmgUrl, onProgress) {
   const url = String(dmgUrl || '');
   if (!url.startsWith(DOWNLOAD_URL_PREFIX)) {
     throw new Error('下载失败：非法的下载地址');
   }
+  const fileName = path.basename(decodeURIComponent(new URL(url).pathname));
+  if (!fileName.endsWith('.dmg')) throw new Error('下载失败：非法的安装包文件名');
+  const manifest = await fetch(LATEST_YML_URL, { headers: { 'User-Agent': 'ReviewFlow' }, signal: AbortSignal.timeout(30000) });
+  if (!manifest.ok) throw new Error('下载失败：无法获取更新包校验信息');
+  const selected = parseLatestYml(await manifest.text());
+  if (selected.dmgFile !== fileName || !selected.sha512) throw new Error('下载失败：缺少匹配的更新包校验信息');
+  const downloadDir = path.join(app.getPath('userData'), 'downloads');
+  await fs.promises.mkdir(downloadDir, { recursive: true });
+  const filePath = path.join(downloadDir, fileName);
+  if (await verifiedDownload(filePath, selected.sha512)) {
+    if (typeof onProgress === 'function') onProgress(100);
+    return filePath;
+  }
+  return withDownloadStallTimeout(async (signal, received) => {
   let response;
   try {
-    // 下载不限总时长：AbortSignal.timeout 会中断整个 body 读取
     response = await fetch(url, {
       headers: { 'User-Agent': 'ReviewFlow' },
+      signal,
     });
   } catch (err) {
     throw new Error(`下载失败：网络请求出错（${err.message}）`);
@@ -108,41 +161,27 @@ async function downloadUpdate(dmgUrl, onProgress) {
     throw new Error(`下载失败：服务器返回 ${response.status}`);
   }
 
-  const downloadDir = path.join(app.getPath('userData'), 'downloads');
-  await fs.promises.mkdir(downloadDir, { recursive: true });
-  const fileName = path.basename(decodeURIComponent(url.split('?')[0]));
-  if (!fileName.endsWith('.dmg')) {
-    throw new Error('下载失败：非法的安装包文件名');
+  const partial = path.join(downloadDir, `.${fileName}.${crypto.randomUUID()}.part`);
+  const length = response.headers.get('content-length');
+  const total = length === null ? null : Number(length);
+  const cap = 1024 * 1024 * 1024;
+  if (total !== null && (!/^\d+$/.test(length) || !Number.isSafeInteger(total) || total > cap)) {
+    await response.body.cancel();
+    throw new Error('下载失败：更新包大小超过 1 GiB 或长度无效');
   }
-  const filePath = path.join(downloadDir, fileName);
-
-  const total = parseInt(response.headers.get('content-length') || '0', 10);
-
-  // 已完整下载过同名文件时直接复用（用于「重新打开安装包」）
-  if (total > 0) {
-    try {
-      if (fs.statSync(filePath).size === total) {
-        await response.body.cancel().catch(() => {});
-        if (typeof onProgress === 'function') onProgress(100);
-        return filePath;
-      }
-    } catch { /* 文件不存在或已损坏则重新下载 */ }
-  }
-
-  const writer = fs.createWriteStream(filePath);
+  const hash = crypto.createHash('sha512');
+  const writer = await fs.promises.open(partial, 'wx', 0o600);
   let downloaded = 0;
   let lastReported = -1;
 
   try {
     for await (const chunk of response.body) {
-      if (!writer.write(chunk)) {
-        await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
-          writer.once('drain', () => resolve());
-          writer.once('error', reject);
-        }));
-      }
+      if (chunk.length) received();
       downloaded += chunk.length;
-      if (total > 0) {
+      if (downloaded > cap || (total !== null && downloaded > total)) throw new Error('更新包大小超过限制或与声明不符');
+      hash.update(chunk);
+      await writer.writeFile(chunk);
+      if (total !== null && total > 0) {
         const percent = Math.min(100, Math.floor((downloaded / total) * 100));
         if (percent - lastReported >= 5 || percent === 100) {
           lastReported = percent;
@@ -150,17 +189,24 @@ async function downloadUpdate(dmgUrl, onProgress) {
         }
       }
     }
-    await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
-      writer.end((err) => (err ? reject(err) : resolve()));
-    }));
+    if (total !== null && downloaded !== total) throw new Error('更新包长度与声明不符');
+    if (hash.digest('base64') !== selected.sha512) throw new Error('更新包校验失败，已删除下载文件');
+    await writer.sync();
   } catch (err) {
-    writer.destroy();
-    await fs.promises.unlink(filePath).catch(() => {});
-    throw new Error(`下载失败：${err.message}`);
+    await writer.close();
+    await fs.promises.unlink(partial);
+    throw err;
   }
-
-  if (total === 0 && typeof onProgress === 'function') onProgress(100);
+  await writer.close();
+  try {
+    await fs.promises.rename(partial, filePath);
+  } catch (error) {
+    await fs.promises.unlink(partial);
+    throw error;
+  }
+  if (typeof onProgress === 'function') onProgress(100);
   return filePath;
+  });
 }
 
-module.exports = { checkForUpdates, downloadUpdate, compareVersions };
+module.exports = { checkForUpdates, downloadUpdate, compareVersions, parseLatestYml };
