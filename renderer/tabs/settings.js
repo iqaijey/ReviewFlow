@@ -1,4 +1,17 @@
 // AI 设置：分组卡片布局 —— 接入方式 / 模型与参数 / 评审内容 / 评审预设 / 个性化与应用
+import { confirmDialog } from '../lib/dialog.js';
+
+const DEFAULT_EXCLUDE_PATTERNS = [
+  '**/package-lock.json',
+  '**/yarn.lock',
+  '**/pnpm-lock.yaml',
+  '**/Podfile.lock',
+  '**/Cargo.lock',
+  '**/go.sum',
+  '**/*.min.js',
+  '**/*.map',
+];
+
 const DEFAULTS = {
   provider: 'openai-compatible',
   backend: 'api',
@@ -11,6 +24,9 @@ const DEFAULTS = {
   customPrompt: '',
   customDimensions: '',
   reasoningEffort: '',
+  noiseLevel: 'balanced',
+  excludePatterns: DEFAULT_EXCLUDE_PATTERNS,
+  pricing: {},
 };
 
 export default {
@@ -22,12 +38,23 @@ export default {
 
     const form = el('div', { class: 'settings-form' });
 
-    const messageBox = el('div', { class: 'settings-message' });
+    const messageBox = el('div', { class: 'settings-message', 'aria-live': 'polite' });
     const showMessage = (text, ok) => {
       messageBox.textContent = '';
+      if (!text) return;
       messageBox.appendChild(el('div', {
         class: ok ? 'settings-msg-ok' : 'settings-msg-err',
       }, text));
+    };
+
+    const makeInlineStatus = () => {
+      const box = el('div', { class: 'settings-inline-msg', 'aria-live': 'polite' });
+      const show = (text, ok = true) => {
+        box.textContent = text || '';
+        box.classList.toggle('is-ok', Boolean(ok && text));
+        box.classList.toggle('is-err', Boolean(!ok && text));
+      };
+      return { box, show };
     };
 
     // 分组卡片：标题 + 副标题说明 + 内容区
@@ -49,6 +76,7 @@ export default {
 
     // 模型行：手动输入框，拉取成功后切换为原生 select 下拉；「手动」可切回
     const makeModelRow = (placeholderText, fetchSettings) => {
+      const containerWrap = el('div', { class: 'settings-model-wrap' });
       const wrap = el('div', { class: 'settings-key-wrap' });
       const input = el('input', {
         class: 'settings-input', type: 'text',
@@ -63,6 +91,9 @@ export default {
       wrap.appendChild(select);
       if (fetchSettings) wrap.appendChild(fetchBtn);
       wrap.appendChild(manualBtn);
+      const modelStatus = makeInlineStatus();
+      containerWrap.appendChild(wrap);
+      containerWrap.appendChild(modelStatus.box);
 
       let models = [];
       // 只有用户手动改过的值，拉取后才保留进下拉；默认回填值不进列表
@@ -83,11 +114,11 @@ export default {
 
       fetchBtn.addEventListener('click', async () => {
         fetchBtn.disabled = true;
-        showMessage('正在拉取模型列表…', true);
+        modelStatus.show('正在拉取模型列表…', true);
         try {
           const ids = await api.listModels(fetchSettings());
           if (!ids.length) {
-            showMessage('接口返回的模型列表为空', false);
+            modelStatus.show('接口返回的模型列表为空', false);
             return;
           }
           models = ids;
@@ -95,9 +126,9 @@ export default {
           input.style.display = 'none';
           manualBtn.style.display = '';
           select.style.display = '';
-          showMessage(`已拉取 ${ids.length} 个模型`, true);
+          modelStatus.show(`已拉取 ${ids.length} 个模型`, true);
         } catch (err) {
-          showMessage(errText(err), false);
+          modelStatus.show(errText(err), false);
         } finally {
           fetchBtn.disabled = false;
         }
@@ -112,7 +143,7 @@ export default {
       });
 
       const row = {
-        element: wrap,
+        element: containerWrap,
         getValue: () => (select.style.display === 'none' ? input.value.trim() : select.value),
         setValue: (v) => {
           input.value = v;
@@ -170,7 +201,29 @@ export default {
     });
     keyWrap.appendChild(apiKeyInput);
     keyWrap.appendChild(toggleKey);
-    apiConnFields.appendChild(makeField('API Key', keyWrap));
+    const keyStatus = makeInlineStatus();
+    let savedBaseUrl = DEFAULTS.baseUrl;
+    let savedKeySet = false;
+    const clearKey = el('button', { class: 'btn settings-key-toggle', type: 'button', 'aria-label': '清除已保存的 API Key' }, '清除');
+    clearKey.addEventListener('click', async () => {
+      clearKey.disabled = true;
+      try {
+        await api.saveSettings({ clearApiKey: true });
+        apiKeyInput.value = '';
+        apiKeyInput.placeholder = 'sk-...';
+        savedKeySet = false;
+        keyStatus.show('已清除 API Key', true);
+        bus.dispatchEvent(new CustomEvent('settings:saved'));
+      } catch (error) {
+        keyStatus.show(`清除失败：${errText(error)}`, false);
+      } finally {
+        clearKey.disabled = false;
+      }
+    });
+    keyWrap.appendChild(clearKey);
+    const keyField = makeField('API Key', keyWrap);
+    keyField.appendChild(keyStatus.box);
+    apiConnFields.appendChild(keyField);
 
     apiConnFields.appendChild(el('div', { class: 'settings-hint' },
       '兼容 OpenAI Chat Completions 接口的服务均可使用（如 OpenAI、DeepSeek、Kimi 等）'));
@@ -216,6 +269,7 @@ export default {
       customPrompt: customPromptInput.value.trim(),
       customDimensions: customDimensionsInput.value.trim(),
       reasoningEffort: effortSelect.value,
+      noiseLevel: currentNoiseLevel(),
       timeoutMin: Math.max(1, Math.round(Number(timeoutInput.value) || 10)),
     });
 
@@ -301,6 +355,56 @@ export default {
       radio.addEventListener('change', syncBackendFields);
     }
 
+    const NOISE_LEVELS = [
+      ['quiet', '安静', '仅输出有充分证据的高/中风险问题，排除低影响改进与主观风格建议'],
+      ['balanced', '均衡', '输出具体可执行的高/中/低问题，排除纯风格与无依据的假设'],
+      ['detailed', '详尽', '包含有价值的低影响可维护性/性能改进与明确限定条件的风险提示'],
+    ];
+    const noiseGrid = el('div', { class: 'settings-noise-grid', role: 'radiogroup', 'aria-label': '评审噪声' });
+    /** @type {Record<string, HTMLInputElement>} */
+    const noiseRadios = {};
+    /** @type {Record<string, HTMLElement>} */
+    const noiseCards = {};
+    for (const [value, name, desc] of NOISE_LEVELS) {
+      const radio = /** @type {HTMLInputElement} */ (el('input', {
+        type: 'radio', name: 'noiseLevel', value, id: `noise-${value}`, class: 'backend-radio',
+      }));
+      noiseRadios[value] = radio;
+      const card = el('label', { class: 'backend-card', for: `noise-${value}` });
+      card.appendChild(radio);
+      card.appendChild(el('div', { class: 'backend-card-name' }, name));
+      card.appendChild(el('div', { class: 'backend-card-desc' }, desc));
+      noiseCards[value] = card;
+      noiseGrid.appendChild(card);
+    }
+    noiseRadios.balanced.checked = true;
+    const currentNoiseLevel = () =>
+      /** @type {NoiseLevel} */ (NOISE_LEVELS.find(([v]) => noiseRadios[v].checked)?.[0] || 'balanced');
+    const syncNoiseCards = () => {
+      const active = currentNoiseLevel();
+      for (const [value, card] of Object.entries(noiseCards)) {
+        card.classList.toggle('selected', value === active);
+      }
+    };
+    syncNoiseCards();
+    const noiseStatus = makeInlineStatus();
+    for (const radio of Object.values(noiseRadios)) {
+      radio.addEventListener('change', async () => {
+        if (!radio.checked) return;
+        syncNoiseCards();
+        const noiseLevel = currentNoiseLevel();
+        try {
+          await api.saveSettings({ noiseLevel });
+          bus.dispatchEvent(new CustomEvent('settings:saved'));
+          noiseStatus.show('评审噪声设置已保存', true);
+        } catch (err) {
+          noiseStatus.show(`保存失败：${errText(err)}`, false);
+        }
+      });
+    }
+    const noiseField = makeField('评审噪声', noiseGrid);
+    noiseField.appendChild(noiseStatus.box);
+
     // ---------- 自定义检查维度 ----------
     const customDimensionsInput = el('textarea', {
       class: 'settings-input settings-textarea', rows: '3',
@@ -322,30 +426,38 @@ export default {
       '会追加到 AI 评审的系统指令中，对所有接入方式都生效'));
 
     const cardContent = makeCard('评审内容', '追加到 AI 评审指令中的自定义内容');
+    cardContent.appendChild(noiseField);
     cardContent.appendChild(customDimensionsField);
     cardContent.appendChild(customPromptField);
     // 恢复默认：清空自定义内容，评审直接走内置默认提示词
     const resetPromptBtn = el('button', { class: 'btn', type: 'button' }, '恢复默认');
+    const resetPromptStatus = makeInlineStatus();
     const resetPromptRow = el('div', { class: 'preset-save-row' });
     resetPromptRow.appendChild(resetPromptBtn);
     resetPromptRow.appendChild(el('span', { class: 'settings-hint' }, '留空即使用内置默认提示词'));
+    resetPromptRow.appendChild(resetPromptStatus.box);
     cardContent.appendChild(resetPromptRow);
     form.appendChild(cardContent);
 
     resetPromptBtn.addEventListener('click', async () => {
       if (!customDimensionsInput.value.trim() && !customPromptInput.value.trim()) {
-        showMessage('当前已是默认提示词', true);
+        resetPromptStatus.show('当前已是默认提示词', true);
         return;
       }
-      if (!confirm('将清空自定义维度与自定义评审要求，恢复为内置默认提示词，继续？')) return;
+      if (!(await confirmDialog({
+        title: '恢复默认提示词',
+        message: '将清空自定义维度与自定义评审要求，恢复为内置默认提示词，继续？',
+        confirmText: '恢复默认',
+        danger: true,
+      }))) return;
       customDimensionsInput.value = '';
       customPromptInput.value = '';
       try {
         await api.saveSettings({ customDimensions: '', customPrompt: '' });
         bus.dispatchEvent(new CustomEvent('settings:saved'));
-        showMessage('已恢复默认提示词', true);
+        resetPromptStatus.show('已恢复默认提示词', true);
       } catch (err) {
-        showMessage(`恢复失败：${errText(err)}`, false);
+        resetPromptStatus.show(`恢复失败：${errText(err)}`, false);
       }
     });
 
@@ -368,8 +480,10 @@ export default {
     const presetIoRow = el('div', { class: 'preset-save-row' });
     const exportPresetBtn = el('button', { class: 'btn', type: 'button' }, '导出预设…');
     const importPresetBtn = el('button', { class: 'btn', type: 'button' }, '导入预设…');
+    const presetStatus = makeInlineStatus();
     presetIoRow.appendChild(exportPresetBtn);
     presetIoRow.appendChild(importPresetBtn);
+    presetIoRow.appendChild(presetStatus.box);
     cardPreset.appendChild(presetIoRow);
     const presetList = el('div', { class: 'preset-list' });
     cardPreset.appendChild(presetList);
@@ -377,14 +491,15 @@ export default {
       '预设记录当前的自定义维度、自定义评审要求、接入方式、模型与思考强度，仅保存在本机'));
     form.appendChild(cardPreset);
 
-    const persistPresets = async (okText) => {
+    const persistPresets = async (okText, presets = cachedPresets) => {
       try {
-        await api.saveSettings({ presets: cachedPresets });
+        await api.saveSettings({ presets });
         bus.dispatchEvent(new CustomEvent('settings:saved'));
-        if (okText) showMessage(okText, true);
+        if (okText) presetStatus.show(okText, true);
         return true;
       } catch (err) {
-        showMessage(`预设保存失败：${errText(err)}`, false);
+        presetStatus.show(`预设保存失败：${errText(err)}`, false);
+        ctx.toast('预设保存失败：' + errText(err), 'error');
         return false;
       }
     };
@@ -405,7 +520,7 @@ export default {
       try {
         await api.saveSettings(patch);
       } catch (err) {
-        showMessage(`应用预设失败：${errText(err)}`, false);
+        presetStatus.show(`应用预设失败：${errText(err)}`, false);
         return;
       }
       if (backend) {
@@ -417,7 +532,7 @@ export default {
       if (Array.isArray(preset.dimensions)) customDimensionsInput.value = patch.customDimensions;
       if (typeof preset.customPrompt === 'string') customPromptInput.value = preset.customPrompt;
       bus.dispatchEvent(new CustomEvent('settings:saved'));
-      showMessage(`已应用预设「${preset.name}」`, true);
+      presetStatus.show(`已应用预设「${preset.name}」`, true);
     };
 
     const renderPresetList = () => {
@@ -439,9 +554,20 @@ export default {
         applyBtn.addEventListener('click', () => applyPreset(preset));
         const delBtn = el('button', { class: 'btn btn-danger', type: 'button' }, '删除');
         delBtn.addEventListener('click', async () => {
-          cachedPresets = cachedPresets.filter((p) => p.id !== preset.id);
-          renderPresetList();
-          await persistPresets('预设已删除');
+          if (!(await confirmDialog({
+            title: '删除预设',
+            message: `确定删除预设「${preset.name || preset.id}」？该操作不可恢复`,
+            confirmText: '确认删除',
+            danger: true,
+          }))) return;
+          delBtn.disabled = true;
+          const remaining = cachedPresets.filter((p) => p.id !== preset.id);
+          if (await persistPresets('预设已删除', remaining)) {
+            cachedPresets = remaining;
+            renderPresetList();
+          } else {
+            delBtn.disabled = false;
+          }
         });
         row.appendChild(applyBtn);
         row.appendChild(delBtn);
@@ -454,9 +580,9 @@ export default {
       try {
         const result = await api.exportPresets();
         if (!result) return; // 用户取消保存对话框
-        showMessage(`已导出 ${result.count} 个预设`, true);
+        presetStatus.show(`已导出 ${result.count} 个预设`, true);
       } catch (err) {
-        showMessage(errText(err), false);
+        presetStatus.show(errText(err), false);
       }
     });
 
@@ -467,16 +593,16 @@ export default {
         cachedPresets = Array.isArray(result.presets) ? result.presets : cachedPresets;
         renderPresetList();
         bus.dispatchEvent(new CustomEvent('settings:saved'));
-        showMessage(`已导入 ${result.added} 个预设`, true);
+        presetStatus.show(`已导入 ${result.added} 个预设`, true);
       } catch (err) {
-        showMessage(errText(err), false);
+        presetStatus.show(errText(err), false);
       }
     });
 
     savePresetBtn.addEventListener('click', async () => {
       const name = presetNameInput.value.trim();
       if (!name) {
-        showMessage('请先填写预设名称', false);
+        presetStatus.show('请先填写预设名称', false);
         return;
       }
       const backend = currentBackend();
@@ -495,6 +621,267 @@ export default {
       await persistPresets(`预设「${name}」已保存`);
     });
 
+    const cardExclude = makeCard('排除规则', '匹配的文件在改动总览中置灰标记为「已排除」，仍可查看 diff，但不参与 AI 评审');
+    const excludePatternsInput = /** @type {HTMLTextAreaElement} */ (el('textarea', {
+      class: 'settings-input settings-textarea',
+      rows: '6',
+      placeholder: DEFAULT_EXCLUDE_PATTERNS.join('\n'),
+      spellcheck: 'false',
+    }));
+    excludePatternsInput.value = DEFAULT_EXCLUDE_PATTERNS.join('\n');
+    const excludeField = makeField('排除规则（每行一条 glob）', excludePatternsInput);
+    excludeField.appendChild(el('div', { class: 'settings-hint' },
+      '最多 200 条规则，每条不超过 200 字；支持在项目根目录 .reviewflow.md 中使用 ```reviewflow-ignore 代码块追加项目级排除规则，以 ! 开头可取消排除（重新包含）'));
+    cardExclude.appendChild(excludeField);
+
+    const excludeActionsRow = el('div', { class: 'settings-section-actions' });
+    const saveExcludeBtn = /** @type {HTMLButtonElement} */ (el('button', { class: 'btn', type: 'button' }, '保存排除规则'));
+    const resetExcludeBtn = /** @type {HTMLButtonElement} */ (el('button', { class: 'btn', type: 'button' }, '恢复默认'));
+    const excludeMsgEl = el('div', { class: 'settings-inline-msg', 'aria-live': 'polite' });
+    excludeActionsRow.appendChild(saveExcludeBtn);
+    excludeActionsRow.appendChild(resetExcludeBtn);
+    excludeActionsRow.appendChild(excludeMsgEl);
+    cardExclude.appendChild(excludeActionsRow);
+    form.appendChild(cardExclude);
+
+    const showExcludeMsg = (text, ok) => {
+      excludeMsgEl.textContent = text;
+      excludeMsgEl.classList.toggle('is-ok', Boolean(ok && text));
+      excludeMsgEl.classList.toggle('is-err', Boolean(!ok && text));
+    };
+
+    const parseExcludeLines = () =>
+      excludePatternsInput.value
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+    const checkExcludeValidity = (lines) => {
+      if (lines.length > 200) {
+        return '排除规则必须为字符串数组，最多 200 条，每条最多 200 字';
+      }
+      if (lines.some((p) => p.length > 200)) {
+        return '排除规则必须为字符串数组，最多 200 条，每条最多 200 字';
+      }
+      return '';
+    };
+
+    excludePatternsInput.addEventListener('input', () => {
+      const err = checkExcludeValidity(parseExcludeLines());
+      if (err) showExcludeMsg(err, false);
+      else showExcludeMsg('', true);
+    });
+
+    saveExcludeBtn.addEventListener('click', async () => {
+      const patterns = parseExcludeLines();
+      const clientErr = checkExcludeValidity(patterns);
+      if (clientErr) {
+        showExcludeMsg(clientErr, false);
+      }
+      saveExcludeBtn.disabled = true;
+      try {
+        await api.saveSettings({ excludePatterns: patterns });
+        showExcludeMsg('排除规则已保存', true);
+        bus.dispatchEvent(new CustomEvent('settings:saved'));
+      } catch (err) {
+        showExcludeMsg(errText(err), false);
+      } finally {
+        saveExcludeBtn.disabled = false;
+      }
+    });
+
+    resetExcludeBtn.addEventListener('click', async () => {
+      resetExcludeBtn.disabled = true;
+      excludePatternsInput.value = DEFAULT_EXCLUDE_PATTERNS.join('\n');
+      try {
+        await api.saveSettings({ excludePatterns: [...DEFAULT_EXCLUDE_PATTERNS] });
+        showExcludeMsg('已恢复默认排除规则', true);
+        bus.dispatchEvent(new CustomEvent('settings:saved'));
+      } catch (err) {
+        showExcludeMsg(errText(err), false);
+      } finally {
+        resetExcludeBtn.disabled = false;
+      }
+    });
+
+    const cardPricing = makeCard('费用估算单价', '配置各接入方式或指定模型的 token 单价（每百万 token），用于运行前费用估算');
+    cardPricing.appendChild(el('div', { class: 'settings-hint' },
+      '键名填写 backend 或 backend:model（如 api、api:gpt-4o、opencode、kimi、codex），输入/输出单价为非负数字，最多 50 项'));
+    const pricingHeader = el('div', { class: 'pricing-header' });
+    pricingHeader.appendChild(el('span', {}, '接入方式 / 模型键'));
+    pricingHeader.appendChild(el('span', {}, '输入 / 百万 token'));
+    pricingHeader.appendChild(el('span', {}, '输出 / 百万 token'));
+    pricingHeader.appendChild(el('span', {}, '币种'));
+    pricingHeader.appendChild(el('span', {}, '操作'));
+    cardPricing.appendChild(pricingHeader);
+
+    const pricingList = el('div', { class: 'pricing-list' });
+    cardPricing.appendChild(pricingList);
+
+    const pricingActionsRow = el('div', { class: 'settings-section-actions' });
+    const addPricingBtn = /** @type {HTMLButtonElement} */ (el('button', { class: 'btn', type: 'button' }, '添加单价'));
+    const savePricingBtn = /** @type {HTMLButtonElement} */ (el('button', { class: 'btn', type: 'button' }, '保存单价'));
+    const pricingMsgEl = el('div', { class: 'settings-inline-msg', 'aria-live': 'polite' });
+    pricingActionsRow.appendChild(addPricingBtn);
+    pricingActionsRow.appendChild(savePricingBtn);
+    pricingActionsRow.appendChild(pricingMsgEl);
+    cardPricing.appendChild(pricingActionsRow);
+    form.appendChild(cardPricing);
+
+    const showPricingMsg = (text, ok) => {
+      pricingMsgEl.textContent = text;
+      pricingMsgEl.classList.toggle('is-ok', Boolean(ok && text));
+      pricingMsgEl.classList.toggle('is-err', Boolean(!ok && text));
+    };
+
+    /**
+     * @type {Array<{
+     *   rowEl: HTMLElement,
+     *   keyInput: HTMLInputElement,
+     *   inputPriceInput: HTMLInputElement,
+     *   outputPriceInput: HTMLInputElement,
+     *   currencySelect: HTMLSelectElement
+     * }>}
+     */
+    let pricingRows = [];
+
+    const syncPricingEmptyHint = () => {
+      const existingEmpty = pricingList.querySelector('.pricing-empty-hint');
+      if (pricingRows.length === 0) {
+        if (!existingEmpty) {
+          pricingList.appendChild(el('div', { class: 'settings-hint pricing-empty-hint' }, '暂无单价配置，点击「添加单价」新增'));
+        }
+      } else if (existingEmpty) {
+        existingEmpty.remove();
+      }
+    };
+
+    /**
+     * @param {{ key?: string, inputPerMTokens?: number, outputPerMTokens?: number, currency?: 'USD' | 'CNY' }} [initial]
+     */
+    const appendPricingRow = (initial = {}) => {
+      const rowEl = el('div', { class: 'pricing-row' });
+      const keyInput = /** @type {HTMLInputElement} */ (el('input', {
+        class: 'settings-input pricing-key',
+        type: 'text',
+        placeholder: '如 api 或 api:gpt-4o',
+        spellcheck: 'false',
+      }));
+      keyInput.value = initial.key || '';
+
+      const inputPriceInput = /** @type {HTMLInputElement} */ (el('input', {
+        class: 'settings-input pricing-input-price',
+        type: 'number',
+        min: '0',
+        step: 'any',
+        placeholder: '0',
+        spellcheck: 'false',
+      }));
+      inputPriceInput.value = initial.inputPerMTokens !== undefined ? String(initial.inputPerMTokens) : '0';
+
+      const outputPriceInput = /** @type {HTMLInputElement} */ (el('input', {
+        class: 'settings-input pricing-output-price',
+        type: 'number',
+        min: '0',
+        step: 'any',
+        placeholder: '0',
+        spellcheck: 'false',
+      }));
+      outputPriceInput.value = initial.outputPerMTokens !== undefined ? String(initial.outputPerMTokens) : '0';
+
+      const currencySelect = /** @type {HTMLSelectElement} */ (el('select', {
+        class: 'settings-input pricing-currency',
+      }));
+      currencySelect.appendChild(el('option', { value: 'USD', text: 'USD' }));
+      currencySelect.appendChild(el('option', { value: 'CNY', text: 'CNY' }));
+      currencySelect.value = initial.currency === 'CNY' ? 'CNY' : 'USD';
+
+      const removeBtn = el('button', {
+        class: 'btn btn-danger pricing-remove-btn',
+        type: 'button',
+      }, '删除');
+
+      const entry = { rowEl, keyInput, inputPriceInput, outputPriceInput, currencySelect };
+      removeBtn.addEventListener('click', () => {
+        pricingRows = pricingRows.filter((r) => r !== entry);
+        rowEl.remove();
+        syncPricingEmptyHint();
+        showPricingMsg('', true);
+      });
+
+      rowEl.appendChild(keyInput);
+      rowEl.appendChild(inputPriceInput);
+      rowEl.appendChild(outputPriceInput);
+      rowEl.appendChild(currencySelect);
+      rowEl.appendChild(removeBtn);
+      pricingRows.push(entry);
+      syncPricingEmptyHint();
+      pricingList.appendChild(rowEl);
+      return entry;
+    };
+
+    /**
+     * @param {Record<string, { inputPerMTokens: number, outputPerMTokens: number, currency: 'USD' | 'CNY' }> | undefined} pricingObj
+     */
+    const renderPricingRows = (pricingObj) => {
+      pricingList.textContent = '';
+      pricingRows = [];
+      const entries = pricingObj && typeof pricingObj === 'object' && !Array.isArray(pricingObj)
+        ? Object.entries(pricingObj)
+        : [];
+      for (const [key, val] of entries) {
+        if (!val || typeof val !== 'object') continue;
+        appendPricingRow({
+          key,
+          inputPerMTokens: val.inputPerMTokens,
+          outputPerMTokens: val.outputPerMTokens,
+          currency: val.currency === 'CNY' ? 'CNY' : 'USD',
+        });
+      }
+      syncPricingEmptyHint();
+    };
+    renderPricingRows({});
+
+    const collectPricingPayload = () => {
+      /** @type {Record<string, { inputPerMTokens: number, outputPerMTokens: number, currency: 'USD' | 'CNY' }>} */
+      const out = {};
+      pricingRows.forEach((row, idx) => {
+        const rawKey = row.keyInput.value.trim();
+        const inRaw = row.inputPriceInput.value.trim();
+        const outRaw = row.outputPriceInput.value.trim();
+        const inputPerMTokens = inRaw === '' ? NaN : Number(inRaw);
+        const outputPerMTokens = outRaw === '' ? NaN : Number(outRaw);
+        const currency = /** @type {'USD' | 'CNY'} */ (row.currencySelect.value === 'CNY' ? 'CNY' : 'USD');
+        const key = rawKey || `__empty_${idx}__`;
+        out[key] = { inputPerMTokens, outputPerMTokens, currency };
+      });
+      return out;
+    };
+
+    addPricingBtn.addEventListener('click', () => {
+      if (pricingRows.length >= 50) {
+        showPricingMsg('价格配置必须是最多 50 项的对象', false);
+        return;
+      }
+      showPricingMsg('', true);
+      const entry = appendPricingRow({ key: '', inputPerMTokens: 0, outputPerMTokens: 0, currency: 'USD' });
+      entry.keyInput.focus();
+    });
+
+    savePricingBtn.addEventListener('click', async () => {
+      savePricingBtn.disabled = true;
+      try {
+        const pricing = collectPricingPayload();
+        await api.saveSettings({ pricing });
+        showPricingMsg('单价配置已保存', true);
+        bus.dispatchEvent(new CustomEvent('settings:saved'));
+      } catch (err) {
+        showPricingMsg(errText(err), false);
+      } finally {
+        savePricingBtn.disabled = false;
+      }
+    });
+
     // ---------- 个性化与应用 ----------
     const cardApp = makeCard('个性化与应用', '应用图标、版本与更新');
 
@@ -507,10 +894,12 @@ export default {
     const pickIconBtn = el('button', { class: 'btn', type: 'button' }, '选择图片…');
     const resetIconBtn = el('button', { class: 'btn', type: 'button' }, '恢复默认');
     resetIconBtn.style.display = 'none';
+    const iconStatus = makeInlineStatus();
     iconRow.appendChild(iconPlaceholder);
     iconRow.appendChild(iconPreview);
     iconRow.appendChild(pickIconBtn);
     iconRow.appendChild(resetIconBtn);
+    iconRow.appendChild(iconStatus.box);
     iconField.appendChild(iconRow);
     iconField.appendChild(el('div', { class: 'settings-hint' },
       '选择正方形图片效果最佳；立即更新 Dock 图标，打包版同时写入应用包（Finder/Launchpad）'));
@@ -529,7 +918,7 @@ export default {
       }
     };
     if (typeof api.currentIcon === 'function') {
-      api.currentIcon().then(refreshIconUI).catch(() => {});
+      api.currentIcon().then(refreshIconUI).catch(() => iconStatus.show('读取当前图标失败', false));
     }
     pickIconBtn.addEventListener('click', async () => {
       try {
@@ -537,20 +926,29 @@ export default {
         if (!picked) return;
         const { bundleUpdated } = await api.applyIcon(picked.path);
         refreshIconUI(picked.preview);
-        ctx.toast(bundleUpdated
+        const msg = bundleUpdated
           ? '图标已更新（Dock 与应用包）'
-          : 'Dock 图标已更新（应用包无写入权限，Finder 图标未变）');
+          : 'Dock 图标已更新（应用包无写入权限，Finder 图标未变）';
+        iconStatus.show(msg, true);
+        ctx.toast(msg);
       } catch (err) {
-        showMessage(`设置图标失败：${errText(err)}`, false);
+        iconStatus.show(`设置图标失败：${errText(err)}`, false);
       }
     });
     resetIconBtn.addEventListener('click', async () => {
+      if (!(await confirmDialog({
+        title: '恢复默认图标',
+        message: '确定恢复为默认应用图标吗？',
+        confirmText: '恢复默认',
+        danger: true,
+      }))) return;
       try {
         await api.resetIcon();
         refreshIconUI(null);
+        iconStatus.show('已恢复默认图标', true);
         ctx.toast('已恢复默认图标');
       } catch (err) {
-        showMessage(`恢复图标失败：${errText(err)}`, false);
+        iconStatus.show(`恢复图标失败：${errText(err)}`, false);
       }
     });
 
@@ -563,7 +961,7 @@ export default {
     versionRow.appendChild(versionEl);
     versionRow.appendChild(checkBtn);
     versionField.appendChild(versionRow);
-    const updateStatus = el('div', { class: 'update-status' });
+    const updateStatus = el('div', { class: 'update-status', 'aria-live': 'polite' });
     versionField.appendChild(updateStatus);
     cardApp.appendChild(versionField);
     form.appendChild(cardApp);
@@ -573,7 +971,7 @@ export default {
       api.getVersion().then((v) => {
         currentVersionText = `ReviewFlow v${v}`;
         versionEl.textContent = currentVersionText;
-      }).catch(() => {});
+      }).catch(() => { versionEl.textContent = '读取版本失败'; });
     }
 
     /** @type {(() => void) | null} */
@@ -681,9 +1079,13 @@ export default {
     // ---------- 吸底操作条 ----------
     const actions = el('div', { class: 'settings-actions' });
     const saveBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '保存');
+    const saveStatus = makeInlineStatus();
     const testBtn = el('button', { class: 'btn', type: 'button' }, '测试连接');
+    const testStatusBox = el('div', { class: 'settings-inline-msg', 'aria-live': 'polite' });
     actions.appendChild(saveBtn);
+    actions.appendChild(saveStatus.box);
     actions.appendChild(testBtn);
+    actions.appendChild(testStatusBox);
     actions.appendChild(messageBox);
 
     // 吸底操作条不进 multi-column 流（其中 sticky 不可靠），作为 form 的同级兄弟
@@ -695,7 +1097,10 @@ export default {
       (radios[merged.backend] || radios.api).checked = true;
       syncBackendFields();
       baseUrlInput.value = merged.baseUrl;
-      apiKeyInput.value = merged.apiKey;
+      savedBaseUrl = merged.baseUrl;
+      savedKeySet = Boolean(merged.apiKeySet);
+      apiKeyInput.value = '';
+      apiKeyInput.placeholder = merged.apiKeySet ? `已保存（${merged.apiKeyHint}）` : 'sk-...';
       modelRow.setValue(merged.model);
       opencodeModelRow.setValue(merged.opencodeModel);
       kimiModelRow.setValue(merged.kimiModel || '');
@@ -706,22 +1111,54 @@ export default {
         .filter((p) => p && typeof p.id === 'string' && p.id);
       renderPresetList();
       effortSelect.value = merged.reasoningEffort || '';
+      (noiseRadios[merged.noiseLevel] || noiseRadios.balanced).checked = true;
+      syncNoiseCards();
       timeoutInput.value = String(merged.timeoutMin || 10);
+      const loadedPatterns = Array.isArray(merged.excludePatterns)
+        ? merged.excludePatterns
+        : DEFAULT_EXCLUDE_PATTERNS;
+      excludePatternsInput.value = loadedPatterns.join('\n');
+      renderPricingRows(merged.pricing || {});
     }).catch(() => {
+      showMessage('读取设置失败，请检查后再保存', false);
       radios.api.checked = true;
       syncBackendFields();
+      noiseRadios.balanced.checked = true;
+      syncNoiseCards();
       baseUrlInput.value = DEFAULTS.baseUrl;
       modelRow.setValue(DEFAULTS.model);
+      excludePatternsInput.value = DEFAULT_EXCLUDE_PATTERNS.join('\n');
+      renderPricingRows({});
     });
 
     saveBtn.addEventListener('click', async () => {
       saveBtn.disabled = true;
       try {
-        await api.saveSettings(currentSettings());
-        showMessage('已保存', true);
+        const excludePatterns = parseExcludeLines();
+        const pricing = collectPricingPayload();
+        const settings = currentSettings();
+        const endpointChangedWithoutKey = savedKeySet && !settings.apiKey && settings.baseUrl !== savedBaseUrl;
+        await api.saveSettings({
+          ...settings,
+          excludePatterns,
+          pricing,
+        });
+        const saved = await api.getSettings();
+        keyStatus.show(endpointChangedWithoutKey && !saved.apiKeySet
+          ? '接口地址已更换，原 API Key 已清除，请重新填写' : '', false);
+        savedBaseUrl = saved.baseUrl;
+        savedKeySet = Boolean(saved.apiKeySet);
+        apiKeyInput.value = '';
+        apiKeyInput.placeholder = saved.apiKeySet ? `已保存（${saved.apiKeyHint}）` : 'sk-...';
+        showExcludeMsg('', true);
+        showPricingMsg('', true);
+        saveStatus.show('已保存', true);
         bus.dispatchEvent(new CustomEvent('settings:saved'));
       } catch (err) {
-        showMessage(`保存失败：${errText(err)}`, false);
+        const msg = errText(err);
+        if (msg.includes('排除规则')) showExcludeMsg(msg, false);
+        if (msg.includes('价格配置')) showPricingMsg(msg, false);
+        saveStatus.show(`保存失败：${msg}`, false);
       } finally {
         saveBtn.disabled = false;
       }
@@ -729,20 +1166,25 @@ export default {
 
     testBtn.addEventListener('click', async () => {
       testBtn.disabled = true;
-      messageBox.textContent = '';
+      testStatusBox.textContent = '';
+      testStatusBox.classList.remove('is-ok', 'is-err');
       const loadingMsg = el('div', { class: 'settings-msg-ok' });
-      loadingMsg.appendChild(el('span', { class: 'spinner spinner-inline' }));
+      loadingMsg.appendChild(el('span', { class: 'spinner spinner-inline', 'aria-hidden': 'true' }));
       loadingMsg.appendChild(document.createTextNode(' 正在测试连接… '));
       loadingMsg.appendChild(el('button', {
         class: 'run-link', type: 'button',
         onClick: () => ctx.showRunDetails(),
       }, '运行详情'));
-      messageBox.appendChild(loadingMsg);
+      testStatusBox.appendChild(loadingMsg);
       try {
         const result = await api.testConnection(currentSettings());
-        showMessage(result.message, !!result.ok);
+        testStatusBox.textContent = result.message;
+        testStatusBox.classList.toggle('is-ok', !!result.ok);
+        testStatusBox.classList.toggle('is-err', !result.ok);
       } catch (err) {
-        showMessage(`测试失败：${errText(err)}`, false);
+        testStatusBox.textContent = `测试失败：${errText(err)}`;
+        testStatusBox.classList.remove('is-ok');
+        testStatusBox.classList.add('is-err');
       } finally {
         testBtn.disabled = false;
       }
