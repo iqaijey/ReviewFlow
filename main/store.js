@@ -209,6 +209,16 @@ function setChecklistStatus({ folder, id, status, dismissal = undefined, expecte
   return list;
 }
 
+/** @param {{ folder?: string, confirmed?: boolean }} [payload] */
+function clearChecklist({ folder, confirmed } = {}) {
+  if (!folder || typeof folder !== 'string') throw new Error('清空清单失败：缺少项目路径');
+  if (confirmed !== true) throw new Error('清空问题清单需要确认');
+  const all = readContainer('review-checklist.json');
+  delete all[folder];
+  writeJson(storeFile('review-checklist.json'), all);
+  return [];
+}
+
 function getDismissals(folder) {
   if (typeof folder !== 'string' || !folder) throw new Error('缺少项目路径');
   const all = readContainer('review-dismissals.json');
@@ -226,5 +236,5 @@ function saveDismissals(folder, value) {
 
 module.exports = {
   saveReview, listReviews, getReview, deleteReview, renameReview, setReviewPinned, updateReviewStats, getRecentProjects, addRecentProject,
-  listChecklist, saveChecklist, setChecklistStatus, getDismissals, saveDismissals,
+  listChecklist, saveChecklist, setChecklistStatus, clearChecklist, getDismissals, saveDismissals,
 };

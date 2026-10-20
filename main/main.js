@@ -437,6 +437,13 @@ function registerIpcHandlers() {
       throw new Error(`更新清单状态失败：${err.message}`);
     }
   });
+  ipcMain.handle('checklist:clear', async (_event, payload) => {
+    try {
+      return store.clearChecklist(payload || {});
+    } catch (err) {
+      throw new Error(`清空问题清单失败：${err.message}`);
+    }
+  });
   ipcMain.handle('checklist:ruleSuggestions', async (_event, payload) => projectRules.listSuggestions(payload));
   ipcMain.handle('checklist:dismissRuleSuggestion', async (_event, payload) => projectRules.dismissSuggestion(payload));
   ipcMain.handle('rules:previewAppend', async (_event, payload) => projectRules.previewAppend(payload));

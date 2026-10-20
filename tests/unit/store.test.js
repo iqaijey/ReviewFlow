@@ -221,3 +221,18 @@ test('重命名保留来源日期，字面搜索包含路径和模型，删除�
   assert.deepStrictEqual(store.deleteReview({ folder, id: entry.id }), { deleted: true });
   assert.deepStrictEqual(store.deleteReview({ folder, id: entry.id }), { deleted: false });
 });
+
+test('清空问题清单需要确认，只清当前项目，不影响其他项目和评审历史', () => {
+  fs.rmSync(path.join(tmpDir, 'review-checklist.json'), { force: true });
+  store.saveChecklist('/r/clear-a', [{ text: 'A 的问题一' }, { text: 'A 的问题二', status: 'fixed' }]);
+  store.saveChecklist('/r/clear-b', [{ text: 'B 的问题' }]);
+  store.saveReview({ folder: '/r/clear-a', markdown: '历史保留' });
+  assert.throws(() => store.clearChecklist({ folder: '/r/clear-a' }), /需要确认/);
+  assert.throws(() => store.clearChecklist({ folder: '', confirmed: true }), /缺少项目路径/);
+  assert.strictEqual(store.listChecklist('/r/clear-a').length, 2);
+  assert.deepStrictEqual(store.clearChecklist({ folder: '/r/clear-a', confirmed: true }), []);
+  assert.deepStrictEqual(store.listChecklist('/r/clear-a'), []);
+  assert.strictEqual(store.listChecklist('/r/clear-b').length, 1);
+  assert.strictEqual(store.listReviews('/r/clear-a').length, 1);
+  assert.deepStrictEqual(store.clearChecklist({ folder: '/r/clear-a', confirmed: true }), []);
+});

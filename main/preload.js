@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('autoReview', {
   checklistList: (folder) => ipcRenderer.invoke('checklist:list', folder),
   checklistSave: (payload) => ipcRenderer.invoke('checklist:save', payload),
   checklistSetStatus: (payload) => ipcRenderer.invoke('checklist:setStatus', payload),
+  checklistClear: (payload) => ipcRenderer.invoke('checklist:clear', payload),
   checklistRuleSuggestions: (payload) => ipcRenderer.invoke('checklist:ruleSuggestions', payload),
   checklistDismissRuleSuggestion: (payload) => ipcRenderer.invoke('checklist:dismissRuleSuggestion', payload),
   previewRuleAppend: (payload) => ipcRenderer.invoke('rules:previewAppend', payload),

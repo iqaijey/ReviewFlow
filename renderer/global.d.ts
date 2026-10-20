@@ -221,6 +221,7 @@ interface AutoReviewApi {
   checklistList(folder: string): Promise<Finding[]>;
   checklistSave(payload: { folder: string; items: Array<Partial<Finding> & { text: string }> }): Promise<Finding[]>;
   checklistSetStatus(payload: ChecklistStatusPayload): Promise<Finding[]>;
+  checklistClear(payload: { folder: string; confirmed: true }): Promise<Finding[]>;
   checklistRuleSuggestions(payload: { folder: string }): Promise<RuleSuggestion[]>;
   checklistDismissRuleSuggestion(payload: { folder: string; id: string }): Promise<RuleSuggestion>;
   previewRuleAppend(payload: { folder: string; suggestionId: string; snippet: string }): Promise<{ previewId: string; expectedHash: string | null; resultingText: string; truncatedByPromptLimit: boolean }>;
