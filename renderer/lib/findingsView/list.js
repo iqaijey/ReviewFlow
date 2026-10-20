@@ -59,6 +59,13 @@ export function createList(context) {
         : '复制修复任务（所选/全部未关闭）'));
       handoffToolbarBtn.disabled = handoffTargetIds.length === 0;
       headerActions.appendChild(handoffToolbarBtn);
+      const clearBtn = /** @type {HTMLButtonElement} */ (context.el('button', {
+        class: 'btn finding-action-btn findings-clear-btn',
+        type: 'button',
+        title: '删除本项目的全部问题记录（不影响评审历史）',
+        onClick: () => context.clearAllFindings(clearBtn),
+      }, '清空问题清单'));
+      headerActions.appendChild(clearBtn);
       header.appendChild(headerActions);
       panel.appendChild(header);
 

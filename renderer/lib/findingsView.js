@@ -6,6 +6,7 @@ import { createFixOperations } from './findingsView/fixOperations.js';
 import { createStatus } from './findingsView/status.js';
 import { createRuleSuggestions } from './findingsView/ruleSuggestions.js';
 import { createList } from './findingsView/list.js';
+import { confirmDialog } from './dialog.js';
 
 /**
  * @param {{
@@ -57,6 +58,7 @@ export function createFindingsView({ container, el, api, bus, getFolder, toast, 
   get mutateStatus() { return status.mutateStatus; },
   get openDismissDialog() { return status.openDismissDialog; },
   get openRuleAppendDialog() { return ruleSuggestions.openRuleAppendDialog; },
+  get clearAllFindings() { return clearAllFindings; },
   };
 
   /** @type {Finding[]} */
@@ -162,6 +164,39 @@ export function createFindingsView({ container, el, api, bus, getFolder, toast, 
     await refreshSuggestions(folder);
     if (folder !== getFolder()) return;
     list.render();
+  }
+
+  /** @param {HTMLButtonElement} opener */
+  async function clearAllFindings(opener) {
+    const folder = getFolder();
+    if (!folder || typeof api.checklistClear !== 'function') return;
+    if (runningOps.size) {
+      toast('有问题正在生成补丁或复核，请等它结束后再清空', 'info');
+      return;
+    }
+    const patchNote = appliedPatches.size
+      ? ` 其中 ${appliedPatches.size} 条已应用的修复补丁将无法再从界面撤销。`
+      : '';
+    const ok = await confirmDialog({
+      title: '清空问题清单',
+      message: `将删除本项目全部 ${findings.length} 条问题（含待处理、已修复、不处理），下次评审不再核对这些旧问题。评审历史不受影响。${patchNote}`,
+      confirmText: '确认清空',
+      danger: true,
+    });
+    if (!ok || folder !== getFolder()) return;
+    opener.disabled = true;
+    try {
+      const next = await api.checklistClear({ folder, confirmed: true });
+      if (folder !== getFolder()) return;
+      selectedIds.clear();
+      appliedPatches.clear();
+      findingErrors.clear();
+      await setFindings(next, folder);
+      toast('问题清单已清空', 'success');
+    } catch (err) {
+      opener.disabled = false;
+      toast('清空问题清单失败：' + errText(err), 'error');
+    }
   }
 
   function clear() {
