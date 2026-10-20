@@ -221,6 +221,36 @@ test('分层合成失败保留已完成合并，末尾批次进入合成且统�
   assert.equal(state.lanes.size, 0);
 });
 
+test('分层合并压不下去时不报错，按部分无损列出并给出覆盖提示', async () => {
+  const { ai, calls } = loadAi((n) => {
+    if (n <= 3) return `批次${n}` + 'x'.repeat(15000) + `尾部${n}`;
+    // 合并输出与输入一样长：旧实现在此抛「分层合并未能缩减内容」，重试同样失败
+    return `## 问题清单\n- [ ] [中][正确性] @?| 合并问题${n}\n` + 'y'.repeat(15000);
+  });
+  const result = await ai.analyzeOverview({ folder: '', files: files(3), runId: 'no-shrink' });
+  assert.equal(result.failed, undefined);
+  assert.notEqual(result.paused, true);
+  const merges = calls.filter((c) => String(c.options.batch).startsWith('（分层合并'));
+  assert.ok(merges.length >= 2);
+  assert.ok(merges.every((c) => c.messages[0].content.includes('12000 字以内')));
+  for (const c of merges) assert.ok(result.markdown.includes(`合并问题${calls.indexOf(c) + 1}`));
+  assert.ok(result.markdown.includes('第 1 部分（合并结果）'));
+  assert.ok(result.coverageNotices.some((t) => t.includes('未生成统一总结')));
+  assert.equal(state.lanes.size, 0);
+});
+
+test('分层合并缩短到可装进一组时仍进入最终综合', async () => {
+  const { ai, calls } = loadAi((n) => {
+    if (n <= 3) return `批次${n}` + 'x'.repeat(15000);
+    return `合并${n}` + 'z'.repeat(5000);
+  });
+  const result = await ai.analyzeOverview({ folder: '', files: files(3), runId: 'shrink' });
+  assert.equal(result.failed, undefined);
+  assert.equal(calls.at(-1).options.batch, '（综合结果）');
+  assert.ok(!result.markdown.includes('合并结果）'));
+  assert.ok(!result.coverageNotices.some((t) => t.includes('未生成统一总结')));
+});
+
 test('单模型分层合成在调用之间暂停，续跑不重复已完成合并', async () => {
   const { ai, calls } = loadAi((n) => {
     if (n <= 3) return `批次${n}` + 'x'.repeat(15000);

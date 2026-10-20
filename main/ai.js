@@ -44,7 +44,10 @@ function completedResult(result, state) {
   if (resolveLane(state.runId)?.cancelled) throw cancelledError();
   if (state.parent) {
     const paths = state.aiTruncatedPaths || [];
-    result.coverageNotices = paths.length ? [`以下文件内容超出单次分析上限被截断：${paths.join('、')}`] : [];
+    result.coverageNotices = [
+      ...(paths.length ? [`以下文件内容超出单次分析上限被截断：${paths.join('、')}`] : []),
+      ...(state.synthesisNotices || []),
+    ];
     if (state.provenance) state.provenance.files = state.provenance.files.map((f) => ({ ...f, aiTruncated: paths.includes(f.path) }));
   }
   completionContexts.set(result, { ...state, reviewId: state.reviewId || state.runId });
@@ -279,10 +282,21 @@ async function listModels(settings) {
 
 // 比旧预算留出更多具体问题空间；超过预算分层合并，不能直接裁掉后续批次。
 const SYNTHESIS_CHAR_BUDGET = 24000;
+// 每组合并结果控制在预算一半以内，两组即可装进下一层的一组，保证逐层收敛
+const MERGE_TARGET_CHARS = Math.floor(SYNTHESIS_CHAR_BUDGET / 2);
 const MERGE_SYSTEM = '请用中文合并、去重以下评审片段，保留每一个具体问题、文件/行号、证据、建议及遗留问题核对结论。' +
-  '只压缩重复表述，不要用笼统总结替代具体问题，不要遗漏末尾片段；保留来源标记。' + ISSUE_LIST_SECTION + LEGACY_CHECK_SECTION;
+  '只压缩重复表述，不要用笼统总结替代具体问题，不要遗漏末尾片段；保留来源标记。' +
+  `输出总长度控制在 ${MERGE_TARGET_CHARS} 字以内：优先精简分析性描述，但每条具体问题都必须保留为问题清单中的一行。` +
+  ISSUE_LIST_SECTION + LEGACY_CHECK_SECTION;
 
-// 保存每层已完成的合并，续跑仅重试失败调用；若模型不压缩则显式失败，避免无限调用或丢弃发现。
+/** @param {string[]} parts */
+function unmergedReport(parts) {
+  return '> 注：各部分评审结果过长，模型未能进一步压缩，未生成统一的综合报告；以下按部分完整列出，未丢弃任何内容。\n\n' +
+    parts.map((part, i) => `## 第 ${i + 1} 部分（合并结果）\n\n${part}`).join('\n\n---\n\n');
+}
+
+// 保存每层已完成的合并，续跑仅重试失败调用。以「重新分组后的组数」判断是否收敛：
+// 组数不减少说明模型压不下去，此时不再报错重试（重试大概率同样失败），而是无损列出各部分结果。
 async function synthesizeResults(cfg, state, inputs, system, prefix, options) {
   const progress = state.synthesis || (state.synthesis = { inputs, groups: null, merged: [] });
   const shouldPause = () => resolveLane(ownerRunId(options.runId))?.pauseRequested;
@@ -307,10 +321,9 @@ async function synthesizeResults(cfg, state, inputs, system, prefix, options) {
       state.statsList.push(result.stats);
       progress.merged.push(result.content);
     }
-    if (progress.merged.join('\n\n').length >= progress.inputs.join('\n\n').length) {
-      // 原始输入和已计费统计保留，下次重新尝试本层压缩。
-      progress.merged = [];
-      throw new Error('分层合并未能缩减内容，已保留原始结果，请继续重试综合');
+    if (groupSynthesisResults(progress.merged, SYNTHESIS_CHAR_BUDGET).length >= groups.length) {
+      state.synthesisNotices = ['综合阶段内容过长，模型未能压缩到单次综合上限，已按部分完整列出合并结果（未生成统一总结）'];
+      return unmergedReport(progress.merged);
     }
     progress.inputs = progress.merged;
     progress.groups = null;
@@ -674,7 +687,8 @@ async function runMulti(multi) {
     }
      const allStats = perModel.map((p) => p.stats).filter(Boolean).concat(synState.statsList, multi.fallbackState?.statsList || []);
      if (mainLane.cancelled) throw cancelledError();
-     return completedResult({ markdown, stats: aggregateStats(allStats), perModel }, { provenance, historyPerModel, folder, files, runId, reviewId: multi.reviewId, title, historyKind, kind: 'overview', noiseLevel: ctx.cfg.noiseLevel, captured: ctx.captured, parent: true, batches: ctx.batches, rules: ctx.rules, planContext: ctx.plan, aiTruncatedPaths: ctx.aiTruncatedPaths });
+     return completedResult({ markdown, stats: aggregateStats(allStats), perModel }, { provenance, historyPerModel, folder, files, runId, reviewId: multi.reviewId, title, historyKind, kind: 'overview', noiseLevel: ctx.cfg.noiseLevel, captured: ctx.captured, parent: true, batches: ctx.batches, rules: ctx.rules, planContext: ctx.plan, aiTruncatedPaths: ctx.aiTruncatedPaths,
+       synthesisNotices: [...(synState.synthesisNotices || []), ...(multi.fallbackState?.synthesisNotices || [])] });
   } finally {
     const lane = resolveLane(runId);
     if (lane) {
