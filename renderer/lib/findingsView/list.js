@@ -204,7 +204,7 @@ export function createList(context) {
             const locBtn = context.el('button', {
               class: 'finding-location',
               type: 'button',
-              title: '点击跳转到改动总览对应位置',
+              title: `${locText}（点击跳转到改动总览对应位置）`,
               onClick: () => {
                 context.bus.dispatchEvent(new CustomEvent('diff:jump', {
                   detail: {

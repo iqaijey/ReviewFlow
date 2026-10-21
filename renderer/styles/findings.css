@@ -107,9 +107,15 @@
 
 .finding-main {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+/* 第一行只放复选框与标签；描述、操作按钮各自独占整行，避免长路径把描述挤成窄列 */
+.finding-select-checkbox {
+  flex-shrink: 0;
+  margin: 0 2px 0 0;
 }
 
 /* ---------- 严重度与分类徽标 ---------- */
@@ -191,9 +197,14 @@
 
 /* ---------- 位置跳转按钮 ---------- */
 .finding-location {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  vertical-align: middle;
   padding: 1px 8px;
   border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
@@ -225,7 +236,9 @@
 
 /* ---------- 问题描述与核对/不处理详情 ---------- */
 .finding-text {
-  flex: 1 1 260px;
+  flex: 1 1 100%;
+  min-width: 0;
+  padding-left: 22px;
   font-size: 13px;
   line-height: 1.55;
   color: var(--text);
@@ -243,11 +256,16 @@
 }
 
 .finding-actions {
-  display: inline-flex;
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
-  margin-left: auto;
-  flex-shrink: 0;
+}
+
+.finding-actions:empty {
+  display: none;
 }
 
 .finding-action-btn {
@@ -263,7 +281,7 @@
   gap: 6px;
   font-size: 12px;
   color: var(--text-dim);
-  padding-left: 2px;
+  padding-left: 22px;
 }
 
 .finding-verdict-badge {

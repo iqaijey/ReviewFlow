@@ -107,6 +107,11 @@ html, body {
 body {
   display: flex;
   flex-direction: row;
+  /* 固定在视口内：根节点永远不可滚动。否则任何元素意外撑出窗口时，
+     聚焦或滚轮会把整个界面（含侧边栏）卷上去，底部留出空白 */
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
 }
 
 /* ---------- 左侧导航边栏 ---------- */
@@ -115,6 +120,9 @@ body {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--sidebar);
   border-right: 1px solid var(--border);
   user-select: none;
