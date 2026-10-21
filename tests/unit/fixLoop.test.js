@@ -19,7 +19,7 @@ function repo() {
   return { folder, git };
 }
 const diff = (file = 'a.js', prefix = true) => `diff --git ${prefix ? 'a/' : ''}${file} ${prefix ? 'b/' : ''}${file}\n--- ${prefix ? 'a/' : ''}${file}\n+++ ${prefix ? 'b/' : ''}${file}\n@@ -1 +1 @@\n-old\n+new\n`;
-function harness(folder, reply = () => '```diff\n' + diff() + '```', backend = 'api') {
+function harness(folder, reply = () => '```diff\n' + diff() + '```', backend = 'api', userData = fs.mkdtempSync(path.join(root, 'ud-'))) {
   let checklist = [normalizeFinding({ id: 'one', text: '空值错误', severity: '高', category: '正确性', updatedAt: 1,
     location: { path: 'a.js', side: 'new', startLine: 1, endLine: 1, anchor: { target: ['old'], before: [], after: [] } } })];
   let now = 100, saves = 0;
@@ -28,11 +28,12 @@ function harness(folder, reply = () => '```diff\n' + diff() + '```', backend = '
   const overrides = {
     './store': { listChecklist: () => structuredClone(checklist), saveChecklist: (_folder, list) => { saves++; checklist = list; return list; } },
     './settings': { getSettings: async () => ({ backend }) },
+    electron: { app: { getPath: () => userData } },
     './ai': { chatWithStats: async (cfg, messages, options) => { calls.push({ cfg, messages, options }); return { content: await reply(), stats: { backend } }; } },
   };
   class Clock extends Date { static now() { return now; } }
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { require: (id) => overrides[id] || local(id), module, Date: Clock, Buffer, structuredClone }, { filename });
-  return { api: module.exports, payload: { folder, findingId: 'one', runId: 'fix-run' }, calls,
+  return { api: module.exports, userData, payload: { folder, findingId: 'one', runId: 'fix-run' }, calls,
     get checklist() { return checklist; }, get saves() { return saves; }, edit() { checklist[0].updatedAt++; checklist[0].status = 'wontfix'; }, tick(ms) { now += ms; } };
 }
 test('提取首个 diff 围栏，拒绝空值、危险路径、模式及不一致文件头', () => {
@@ -90,15 +91,38 @@ test('其他文件、排除项、资源和符号链接失败，失败预览无�
   fs.writeFileSync(path.join(folder, 'binary.js'), Buffer.from([0, 1]));
   assert.throws(() => safety.readTarget(folder, 'binary.js'), /二进制/);
 });
-test('补丁缓存最多 20 份且 30 分钟过期，跨项目 ID 无效', async () => {
+test('同一问题只保留最新未应用补丁，跨项目 ID 无效，未应用补丁 30 天后清理', async () => {
   const { folder } = repo(), h = harness(folder);
   const first = await h.api.generatePatch(h.payload);
-  for (let i = 0; i < 20; i++) await h.api.generatePatch(h.payload);
-  await assert.rejects(h.api.applyPatch({ folder, patchId: first.patchId, confirmed: true }), /过期/);
   const last = await h.api.generatePatch(h.payload);
-  await assert.rejects(h.api.applyPatch({ folder: root, patchId: last.patchId, confirmed: true }), /过期/);
+  await assert.rejects(h.api.applyPatch({ folder, patchId: first.patchId, confirmed: true }), /已清理/);
+  await assert.rejects(h.api.applyPatch({ folder: root, patchId: last.patchId, confirmed: true }), /已清理/);
   h.tick(30 * 60 * 1000);
-  await assert.rejects(h.api.applyPatch({ folder, patchId: last.patchId, confirmed: true }), /过期/);
+  assert.equal(h.api.listPatches({ folder }).map((p) => p.patchId).join(), last.patchId);
+  h.tick(30 * 24 * 60 * 60 * 1000);
+  assert.equal(h.api.listPatches({ folder }).length, 0);
+});
+test('补丁持久化：重启后可再次查看、应用和撤销，文件变化后拒绝', async () => {
+  const { folder } = repo(), h = harness(folder);
+  const generated = await h.api.generatePatch(h.payload);
+  const restarted = harness(folder, undefined, 'api', h.userData);
+  assert.equal(JSON.stringify(restarted.api.listPatches({ folder }).map((p) => [p.patchId, p.findingId, p.applied])), JSON.stringify([[generated.patchId, 'one', false]]));
+  const reopened = await restarted.api.openPatch({ folder, patchId: generated.patchId });
+  assert.equal(reopened.diff, generated.diff);
+  assert.equal(reopened.check.ok, true, reopened.check.error);
+  await restarted.api.applyPatch({ folder, patchId: generated.patchId, confirmed: true });
+  await assert.rejects(restarted.api.openPatch({ folder, patchId: generated.patchId }), /已应用/);
+  const again = harness(folder, undefined, 'api', h.userData);
+  assert.equal(again.api.listPatches({ folder })[0].applied, true);
+  assert.equal((await again.api.revertPatch({ folder, patchId: generated.patchId, confirmed: true })).reverted, true);
+  assert.equal(fs.readFileSync(path.join(folder, 'a.js'), 'utf8'), 'old\n');
+  fs.writeFileSync(path.join(folder, 'a.js'), 'user\n');
+  const stale = await harness(folder, undefined, 'api', h.userData).api.openPatch({ folder, patchId: generated.patchId });
+  assert.equal(stale.check.ok, false);
+  assert.match(stale.check.error, /已变化/);
+  assert.equal(fs.statSync(path.join(h.userData, 'fix-patches.json')).mode & 0o777, 0o600);
+  again.api.clearPatches(folder);
+  assert.equal(harness(folder, undefined, 'api', h.userData).api.listPatches({ folder }).length, 0);
 });
 test('单问题复核使用现有解析和冲突规则，无法解析不写入', async () => {
   const { folder } = repo();

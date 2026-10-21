@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('autoReview', {
   generateFixPatch: (payload) => ipcRenderer.invoke('fix:generatePatch', payload),
   applyFixPatch: (payload) => ipcRenderer.invoke('fix:applyPatch', payload),
   revertFixPatch: (payload) => ipcRenderer.invoke('fix:revertPatch', payload),
+  listFixPatches: (payload) => ipcRenderer.invoke('fix:listPatches', payload),
+  openFixPatch: (payload) => ipcRenderer.invoke('fix:openPatch', payload),
   verifyFinding: (payload) => ipcRenderer.invoke('fix:verifyFinding', payload),
   getHandoffPrompt: (payload) => ipcRenderer.invoke('fix:handoffPrompt', payload),
   estimateRun: (payload) => ipcRenderer.invoke('ai:estimate', payload),

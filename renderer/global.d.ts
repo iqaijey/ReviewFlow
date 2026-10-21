@@ -146,7 +146,12 @@ interface FixFindingPayload { readonly folder: string; readonly findingId: strin
 interface FixPatchFile { readonly path: string; readonly additions: number; readonly deletions: number }
 interface FixPatchPreview {
   readonly patchId: string; readonly diff: string; readonly files: FixPatchFile[];
-  readonly check: { readonly ok: boolean; readonly error: string | null }; readonly stats: ReviewStats;
+  readonly check: { readonly ok: boolean; readonly error: string | null }; readonly stats: ReviewStats | null;
+  readonly createdAt?: number; readonly persistenceWarnings?: string[];
+}
+interface FixPatchSummary {
+  readonly patchId: string; readonly findingId: string; readonly applied: boolean; readonly createdAt: number;
+  readonly files: FixPatchFile[];
 }
 interface EstimatePayload {
   readonly folder: string; readonly kind: 'overview' | 'full' | 'file'; readonly snapshotId?: string;
@@ -208,6 +213,8 @@ interface AutoReviewApi {
   generateFixPatch(payload: FixFindingPayload & { readonly extraInstruction?: string }): Promise<FixPatchPreview>;
   applyFixPatch(payload: { readonly folder: string; readonly patchId: string; readonly confirmed: true }): Promise<{ applied: true; files: FixPatchFile[] }>;
   revertFixPatch(payload: { readonly folder: string; readonly patchId: string; readonly confirmed: true }): Promise<{ reverted: true; finding?: Finding }>;
+  listFixPatches(payload: { readonly folder: string }): Promise<FixPatchSummary[]>;
+  openFixPatch(payload: { readonly folder: string; readonly patchId: string }): Promise<FixPatchPreview>;
   verifyFinding(payload: FixFindingPayload): Promise<{ verdict: VerificationVerdict | null; note: string; finding: Finding | null }>;
   getHandoffPrompt(payload: { readonly folder: string; readonly findingIds: string[] }): Promise<{ markdown: string; commands: Array<{ label: string; command: string }> }>;
   estimateRun(payload: EstimatePayload): Promise<RunEstimate>;

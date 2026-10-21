@@ -1,7 +1,9 @@
 const { randomUUID } = require('crypto');
+const path = require('path');
 const safety = require('./patchSafety');
 const store = require('./store');
 const findings = require('./findings');
+const { writeFileAtomic, readJsonFile } = require('./atomicFile');
 const { captureProjectRules, withCapturedRules } = require('./ai/planContext');
 /** @typedef {import('./findings').Finding} Finding */
 /** @typedef {{previous:Pick<Finding,'status'|'verification'|'lastVerifiedAt'>,verified:Finding}} VerificationUndo */
@@ -9,14 +11,56 @@ const { captureProjectRules, withCapturedRules } = require('./ai/planContext');
 /** @type {Map<string,Patch>} */
 const patches = new Map();
 const writingFolders = new Set();
-const TTL = 30 * 60 * 1000;
+// 补丁持久化到 userData：关掉预览或重启后仍可查看/应用，已应用的仍可撤销。
+// 有效性不靠时间过期，而是应用/撤销前核对目标文件哈希；未应用的旧补丁 30 天后清理。
+const PATCH_FILE = 'fix-patches.json';
+const MAX_STORED_PATCHES = 200;
+const UNAPPLIED_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
+let patchesLoaded = false;
+function patchFile() {
+  const { app } = require('electron');
+  return path.join(app.getPath('userData'), PATCH_FILE);
+}
+/** @param {any} p */
+function isStoredPatch(p) {
+  return p && typeof p === 'object' && typeof p.folder === 'string' && typeof p.findingId === 'string'
+    && typeof p.diff === 'string' && Array.isArray(p.files) && Number.isInteger(p.strip)
+    && p.contentHashes && typeof p.contentHashes === 'object' && typeof p.applied === 'boolean'
+    && Number.isFinite(p.createdAt) && (p.postHashes === null || typeof p.postHashes === 'object');
+}
+function loadPatches() {
+  if (patchesLoaded) return;
+  // 读取失败直接抛出且不置位，避免随后保存时用空内存覆盖磁盘上的补丁
+  const data = readJsonFile(patchFile(), {});
+  patchesLoaded = true;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+  for (const [id, p] of Object.entries(data)) if (isStoredPatch(p) && !patches.has(id)) patches.set(id, { ...p, busy: false });
+}
+/** @returns {string[]} 持久化失败只告警，不影响已在内存中的补丁 */
+function savePatches() {
+  /** @type {Record<string, Omit<Patch,'busy'>>} */
+  const out = {};
+  for (const [id, { busy, ...rest }] of patches) out[id] = rest;
+  try {
+    writeFileAtomic(patchFile(), JSON.stringify(out), { encoding: 'utf8', mode: 0o600 });
+    return [];
+  } catch (error) {
+    console.warn('保存修复补丁失败');
+    return [`修复补丁未能保存到本地（${error.message}），重启后将无法再次查看`];
+  }
+}
 function prune() {
-  for (const [id, patch] of patches) if (!patch.busy && Date.now() - patch.createdAt >= TTL) patches.delete(id);
+  loadPatches();
+  let changed = false;
+  for (const [id, patch] of patches) {
+    if (!patch.busy && !patch.applied && Date.now() - patch.createdAt >= UNAPPLIED_MAX_AGE) { patches.delete(id); changed = true; }
+  }
+  if (changed) savePatches();
 }
 function getPatch(folder, patchId) {
   safety.validateFolder(folder); prune();
   const patch = patches.get(patchId);
-  if (!patch || patch.folder !== folder) throw new Error('补丁不存在或已过期，请重新生成');
+  if (!patch || patch.folder !== folder) throw new Error('补丁不存在或已清理，请重新生成');
   if (patch.busy) throw new Error('补丁正在处理中，请稍后重试');
   return patch;
 }
@@ -68,14 +112,48 @@ async function generatePatch({ folder, findingId, runId, extraInstruction = '' }
     catch (error) { if (strip !== 0) throw error; await safety.applyGit(folder, diff, 0, false, true); }
   } catch (error) { check = { ok: false, error: String(error.stderr || error.message).trim() }; }
   prune();
-  while (patches.size >= 20) {
-    const oldest = [...patches].find(([, p]) => !p.busy);
-    if (!oldest) throw new Error('补丁正在处理中，请稍后重试');
+  // 同一问题只保留最新的未应用补丁；已应用的保留以便撤销
+  for (const [id, p] of patches) {
+    if (p.folder === folder && p.findingId === findingId && !p.applied && !p.busy) patches.delete(id);
+  }
+  while (patches.size >= MAX_STORED_PATCHES) {
+    const oldest = [...patches].filter(([, p]) => !p.busy && !p.applied).sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+    if (!oldest) break;
     patches.delete(oldest[0]);
   }
   const patchId = randomUUID();
   patches.set(patchId, { folder, findingId, diff, files, contentHashes, postHashes: null, strip, createdAt: Date.now(), applied: false, busy: false });
-  return { patchId, diff, files, check, stats: result.stats };
+  const persistenceWarnings = savePatches();
+  return { patchId, diff, files, check, stats: result.stats, ...(persistenceWarnings.length ? { persistenceWarnings } : {}) };
+}
+/** @param {string} folder @param {Patch} patch */
+function isStale(folder, patch) {
+  const expected = patch.applied ? patch.postHashes : patch.contentHashes;
+  try {
+    return JSON.stringify(safety.targetHashes(folder, patch.files)) !== JSON.stringify(expected);
+  } catch {
+    return true;
+  }
+}
+/** 本项目已保存的补丁摘要（不含 diff 正文），供问题行显示「查看补丁」「撤销补丁」 */
+function listPatches({ folder }) {
+  safety.validateFolder(folder); prune();
+  return [...patches].filter(([, p]) => p.folder === folder)
+    .map(([patchId, p]) => ({ patchId, findingId: p.findingId, applied: p.applied, createdAt: p.createdAt, files: p.files }));
+}
+/** 重新打开未应用补丁的预览：按当前工作区重新预检，文件已变化时不允许应用 */
+async function openPatch({ folder, patchId }) {
+  const patch = getPatch(folder, patchId);
+  if (patch.applied) throw new Error('补丁已应用，如需回退请使用「撤销补丁」');
+  /** @type {{ ok: boolean, error: string | null }} */
+  let check = { ok: true, error: null };
+  if (!patch.files.length) check = { ok: false, error: '补丁格式无效，请重新生成' };
+  else if (isStale(folder, patch)) check = { ok: false, error: '目标文件在生成补丁后已变化，请重新生成补丁' };
+  else {
+    try { await safety.applyGit(folder, patch.diff, patch.strip, false, true); }
+    catch (error) { check = { ok: false, error: String(error.stderr || error.message).trim() }; }
+  }
+  return { patchId, diff: patch.diff, files: patch.files, check, stats: null, createdAt: patch.createdAt };
 }
 async function mutatePatch({ folder, patchId, confirmed }, reverse) {
   if (confirmed !== true) throw new Error(`${reverse ? '撤销' : '应用'}补丁需要明确确认 confirmed: true`);
@@ -102,10 +180,17 @@ async function mutatePatch({ folder, patchId, confirmed }, reverse) {
     patch.postHashes = reverse ? null : safety.targetHashes(folder, patch.files);
     if (!reverse) {
       delete patch.verificationUndo;
+      savePatches();
       return { applied: true, files: patch.files };
     }
     const restored = restoreVerification(folder, patch);
     delete patch.verificationUndo;
+    // 撤销后补丁可再次应用：留作「查看补丁」，同一问题其它未应用补丁不再保留
+    for (const [id, p] of patches) {
+      if (p !== patch && p.folder === folder && p.findingId === patch.findingId && !p.applied && !p.busy) patches.delete(id);
+    }
+    patch.createdAt = Date.now();
+    savePatches();
     return { reverted: true, ...(restored ? { finding: restored } : {}) };
   } finally { patch.busy = false; writingFolders.delete(folder); }
 }
@@ -135,6 +220,7 @@ async function verifyFinding({ folder, findingId, runId }) {
   const finding = getFinding(folder, findingId);
   if (!finding.location) throw new Error('问题缺少文件位置，无法复核');
   const captured = [{ id: finding.id, updatedAt: finding.updatedAt }];
+  loadPatches();
   const appliedPatches = [...patches.values()].filter((p) => p.folder === folder && p.findingId === findingId && p.applied)
     .map((patch) => ({ patch, postHashes: patch.postHashes }));
   const diff = await currentFindingDiff(folder, finding.location.path);
@@ -165,6 +251,7 @@ async function verifyFinding({ folder, findingId, runId }) {
       const previous = unchanged ? undo.previous : { status: finding.status, verification: finding.verification, lastVerifiedAt: finding.lastVerifiedAt };
       patch.verificationUndo = structuredClone({ previous, verified });
     }
+    if (appliedPatches.length) savePatches();
   }
   return { verdict: entries[0].verdict, note: entries[0].note, finding: verified };
 }
@@ -180,4 +267,10 @@ function handoffPrompt({ folder, findingIds }) {
     { label: 'Codex（自行运行）', command: `codex exec --cd ${quote(folder)} - < reviewflow-fix-prompt.md` },
   ] };
 }
-module.exports = { generatePatch, applyPatch: (payload) => mutatePatch(payload, false), revertPatch: (payload) => mutatePatch(payload, true), verifyFinding, handoffPrompt };
+/** 清空问题清单时一并删除该项目的补丁，避免留下没有对应问题的孤儿记录 */
+function clearPatches(folder) {
+  loadPatches();
+  for (const [id, p] of patches) if (p.folder === folder && !p.busy) patches.delete(id);
+  return savePatches();
+}
+module.exports = { generatePatch, listPatches, openPatch, clearPatches, applyPatch: (payload) => mutatePatch(payload, false), revertPatch: (payload) => mutatePatch(payload, true), verifyFinding, handoffPrompt };

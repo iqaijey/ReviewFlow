@@ -414,6 +414,8 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('fix:applyPatch', async (_event, payload) => fixLoop.applyPatch(payload || {}));
   ipcMain.handle('fix:revertPatch', async (_event, payload) => fixLoop.revertPatch(payload || {}));
+  ipcMain.handle('fix:listPatches', async (_event, payload) => fixLoop.listPatches(payload || {}));
+  ipcMain.handle('fix:openPatch', async (_event, payload) => fixLoop.openPatch(payload || {}));
   ipcMain.handle('fix:verifyFinding', async (event, payload) => {
     ai.setChunkSender((runId, text) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
@@ -439,7 +441,9 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('checklist:clear', async (_event, payload) => {
     try {
-      return store.clearChecklist(payload || {});
+      const next = store.clearChecklist(payload || {});
+      fixLoop.clearPatches(payload.folder);
+      return next;
     } catch (err) {
       throw new Error(`清空问题清单失败：${err.message}`);
     }
