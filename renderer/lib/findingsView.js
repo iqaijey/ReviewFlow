@@ -29,6 +29,7 @@ export function createFindingsView({ container, el, api, bus, getFolder, toast, 
   get openAccessibleDialog() { return dialogs.openAccessibleDialog; },
   get errText() { return errText; },
   get appliedPatches() { return appliedPatches; },
+  get savedPatches() { return savedPatches; },
   get findingErrors() { return findingErrors; },
   get bus() { return bus; },
   get render() { return list.render; },
@@ -55,6 +56,7 @@ export function createFindingsView({ container, el, api, bus, getFolder, toast, 
   get runGenerateFixPatch() { return fixOperations.runGenerateFixPatch; },
   get runVerifyFinding() { return fixOperations.runVerifyFinding; },
   get runRevertFixPatch() { return fixOperations.runRevertFixPatch; },
+  get runOpenSavedPatch() { return fixOperations.runOpenSavedPatch; },
   get mutateStatus() { return status.mutateStatus; },
   get openDismissDialog() { return status.openDismissDialog; },
   get openRuleAppendDialog() { return ruleSuggestions.openRuleAppendDialog; },
@@ -71,6 +73,8 @@ export function createFindingsView({ container, el, api, bus, getFolder, toast, 
   const selectedIds = new Set();
   /** @type {Map<string, string>} */
   const appliedPatches = new Map();
+  /** @type {Map<string, string>} 已生成但未应用的补丁（findingId → patchId） */
+  const savedPatches = new Map();
   /** @type {Map<string, { message: string, backendUnsupported: boolean }>} */
   const findingErrors = new Map();
   /** @type {Map<string, { kind: 'patch' | 'verify', runId: string, status: ReturnType<typeof import('./runStatus.js').createRunStatus> }>} */
@@ -130,6 +134,22 @@ export function createFindingsView({ container, el, api, bus, getFolder, toast, 
     }
   }
 
+  /**
+   * 补丁读取失败不影响问题清单本身显示
+   * @param {string} folder
+   * @returns {Promise<FixPatchSummary[]>}
+   */
+  async function loadStoredPatches(folder) {
+    if (typeof api.listFixPatches !== 'function') return [];
+    try {
+      const list = await api.listFixPatches({ folder });
+      return Array.isArray(list) ? list : [];
+    } catch (err) {
+      toast('读取已保存的修复补丁失败：' + errText(err), 'error');
+      return [];
+    }
+  }
+
   async function reloadFromStore(folder = getFolder()) {
     if (folder !== getFolder()) return;
     const seq = ++loadSeq;
@@ -140,12 +160,16 @@ export function createFindingsView({ container, el, api, bus, getFolder, toast, 
   return;
     }
     try {
-  const [loadedFindings] = await Promise.all([
+  const [loadedFindings, storedPatches] = await Promise.all([
     api.checklistList(folder),
+    loadStoredPatches(folder),
     refreshSuggestions(folder),
   ]);
   if (seq !== loadSeq || folder !== getFolder()) return;
   findings = Array.isArray(loadedFindings) ? loadedFindings : [];
+  appliedPatches.clear();
+  savedPatches.clear();
+  for (const patch of storedPatches) (patch.applied ? appliedPatches : savedPatches).set(patch.findingId, patch.patchId);
   list.render();
     } catch (err) {
   if (seq !== loadSeq || folder !== getFolder()) return;
@@ -190,6 +214,7 @@ export function createFindingsView({ container, el, api, bus, getFolder, toast, 
       if (folder !== getFolder()) return;
       selectedIds.clear();
       appliedPatches.clear();
+      savedPatches.clear();
       findingErrors.clear();
       await setFindings(next, folder);
       toast('问题清单已清空', 'success');
@@ -206,6 +231,7 @@ export function createFindingsView({ container, el, api, bus, getFolder, toast, 
     selectedIds.clear();
     savingIds.clear();
     appliedPatches.clear();
+    savedPatches.clear();
     findingErrors.clear();
     for (const op of runningOps.values()) {
   op.status.dispose();

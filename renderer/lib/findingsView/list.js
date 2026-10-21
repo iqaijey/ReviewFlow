@@ -236,13 +236,14 @@ export function createList(context) {
           const isBusy = isSaving || Boolean(runningOp);
           const isOpenFinding = item.status === 'pending' || item.status === 'partial';
           const appliedPatchId = context.appliedPatches.get(item.id) || null;
+          const savedPatchId = appliedPatchId ? null : context.savedPatches.get(item.id) || null;
 
           if (isOpenFinding && hasLoc) {
             const genPatchBtn = /** @type {HTMLButtonElement} */ (context.el('button', {
               class: 'btn finding-action-btn',
               type: 'button',
               onClick: () => context.runGenerateFixPatch(item, genPatchBtn),
-            }, '生成修复补丁'));
+            }, savedPatchId ? '重新生成补丁' : '生成修复补丁'));
             genPatchBtn.disabled = isBusy;
             actions.appendChild(genPatchBtn);
 
@@ -253,6 +254,16 @@ export function createList(context) {
             }, '复核此问题'));
             verifyBtn.disabled = isBusy;
             actions.appendChild(verifyBtn);
+          }
+
+          if (savedPatchId) {
+            const viewPatchBtn = /** @type {HTMLButtonElement} */ (context.el('button', {
+              class: 'btn finding-action-btn',
+              type: 'button',
+              onClick: () => context.runOpenSavedPatch(item, viewPatchBtn),
+            }, '查看补丁'));
+            viewPatchBtn.disabled = isBusy;
+            actions.appendChild(viewPatchBtn);
           }
 
           if (appliedPatchId) {

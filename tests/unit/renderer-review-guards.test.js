@@ -271,6 +271,7 @@ test('无位置问题渲染为纯文本 span 而非可点击跳转按钮', async
     savingIds: new Set(),
     runningOps: new Map(),
     appliedPatches: new Map(),
+    savedPatches: new Map(),
     findingErrors: new Map(),
     severityFilter: 'all',
     categoryFilter: 'all',
@@ -1002,7 +1003,7 @@ test('撤销补丁采用返回 finding 的恢复状态与复核备注', async ()
   globalThis.HTMLElement = class {};
   const item = { id: 'f1', status: 'fixed' };
   const restored = { ...item, status: 'pending', verification: { note: '补丁已撤销，需重新复核' } };
-  const context = { getFolder: () => '/A', appliedPatches: new Map([['f1', 'patch']]), savingIds: new Set(),
+  const context = { getFolder: () => '/A', appliedPatches: new Map([['f1', 'patch']]), savedPatches: new Map(), savingIds: new Set(),
     findingErrors: new Map(), findings: [item], render() {}, toast() {}, bus: new EventTarget(),
     api: { revertFixPatch: async () => ({ reverted: true, finding: restored }) }, container: { querySelectorAll: () => [], querySelector: () => null } };
   try {
@@ -1010,6 +1011,7 @@ test('撤销补丁采用返回 finding 的恢复状态与复核备注', async ()
     assert.equal(context.findings[0], restored);
     assert.equal(context.findings[0].verification.note, '补丁已撤销，需重新复核');
     assert.equal(context.appliedPatches.has('f1'), false);
+    assert.equal(context.savedPatches.get('f1'), 'patch');
   } finally { globalThis.HTMLElement = oldElement; }
 });
 

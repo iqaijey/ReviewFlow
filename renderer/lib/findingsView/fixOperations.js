@@ -32,6 +32,8 @@ export function createFixOperations(context) {
         runId,
       });
       if (context.getFolder() !== folder) return;
+      context.savedPatches.set(item.id, preview.patchId);
+      for (const warning of preview.persistenceWarnings || []) context.toast(warning, 'error');
       context.openPatchDialog(item, preview, opener);
     } catch (err) {
       if (context.getFolder() !== folder) return;
@@ -70,6 +72,7 @@ export function createFixOperations(context) {
         if (index >= 0) context.findings[index] = result.finding;
       }
       context.appliedPatches.delete(item.id);
+      context.savedPatches.set(item.id, patchId);
       context.toast('已撤销修复补丁', 'success');
       context.bus.dispatchEvent(new CustomEvent('changes:rescan'));
     } catch (err) {
@@ -152,7 +155,32 @@ export function createFixOperations(context) {
     }
   }
 
+  /**
+   * @param {Finding} item
+   * @param {HTMLButtonElement} opener
+   */
+  async function runOpenSavedPatch(item, opener) {
+    const folder = context.getFolder();
+    const patchId = context.savedPatches.get(item.id);
+    if (!folder || !patchId || typeof context.api.openFixPatch !== 'function') return;
+    opener.disabled = true;
+    try {
+      const preview = await context.api.openFixPatch({ folder, patchId });
+      if (context.getFolder() !== folder) return;
+      context.openPatchDialog(item, preview, opener);
+    } catch (err) {
+      if (context.getFolder() !== folder) return;
+      const msg = context.errText(err);
+      context.savedPatches.delete(item.id);
+      context.toast('打开补丁失败：' + msg, 'error');
+      context.render();
+    } finally {
+      opener.disabled = false;
+    }
+  }
+
   return {
+    get runOpenSavedPatch() { return runOpenSavedPatch; },
     get runGenerateFixPatch() { return runGenerateFixPatch; },
     get runVerifyFinding() { return runVerifyFinding; },
     get runRevertFixPatch() { return runRevertFixPatch; },

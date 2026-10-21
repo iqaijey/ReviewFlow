@@ -222,6 +222,7 @@ export function createPatchDialogs(context) {
             });
             if (epoch !== projectEpoch || context.getFolder() !== folder) return;
             context.appliedPatches.set(item.id, currentPreview.patchId);
+            context.savedPatches.delete(item.id);
             context.findingErrors.delete(item.id);
             context.toast('补丁已应用到工作区（未暂存、未提交）', 'success');
             context.bus.dispatchEvent(new CustomEvent('changes:rescan'));
@@ -311,6 +312,8 @@ export function createPatchDialogs(context) {
             });
             if (!lifecycle.isActive() || context.getFolder() !== folder) return;
             currentPreview = nextPreview;
+            context.savedPatches.set(item.id, nextPreview.patchId);
+            context.render();
             renderPreviewContent();
           } catch (err) {
             if (!lifecycle.isActive() || context.getFolder() !== folder) return;
