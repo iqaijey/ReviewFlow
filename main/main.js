@@ -27,6 +27,9 @@ function persistCompleted(result) { return completeReview(result, ai.getCompleti
 const planStore = require('./planStore');
 const urlFetch = require('./urlFetch');
 const updateChecker = require('./updateChecker');
+const { createAgentApi } = require('./agentApi');
+/** @type {ReturnType<typeof createAgentApi> | null} */
+let agentApi = null;
 
 // 窗口位置/尺寸记忆：启动时恢复上次 bounds（位置校验仍在屏幕范围内，不在则只恢复尺寸），
 // resize/move 防抖 1s 写回，close 时立即写一次
@@ -191,7 +194,18 @@ function planImagePaths(folder, planId, imageNames) {
     .filter((p) => fs.existsSync(p));
 }
 
+/**
+ * 处理函数同时登记到 handlers，供外部 Agent 接口复用同一实现
+ * @returns {Map<string, import('./agentApi').IpcHandler>}
+ */
 function registerIpcHandlers() {
+  /** @type {Map<string, import('./agentApi').IpcHandler>} */
+  const handlers = new Map();
+  /** @param {string} channel @param {import('./agentApi').IpcHandler} fn */
+  const handle = (channel, fn) => {
+    ipcMain.handle(channel, fn);
+    handlers.set(channel, fn);
+  };
   ai.onRunsChanged(() => {
     const runs = ai.getRuns();
     for (const win of BrowserWindow.getAllWindows()) {
@@ -200,8 +214,8 @@ function registerIpcHandlers() {
       }
     }
   });
-  ipcMain.handle('app:getInitialFolder', async () => getInitialFolder());
-  ipcMain.handle('app:getVersion', async () => app.getVersion());
+  handle('app:getInitialFolder', async () => getInitialFolder());
+  handle('app:getVersion', async () => app.getVersion());
 
   // 渲染进程主题切换时同步窗口底色，避免深色模式启动/刷新闪白
   ipcMain.on('app:setTheme', (event, theme) => {
@@ -211,7 +225,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('icon:pick', async () => {
+  handle('icon:pick', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openFile'],
       filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
@@ -222,19 +236,19 @@ function registerIpcHandlers() {
     return { path: imagePath, preview };
   });
 
-  ipcMain.handle('icon:apply', async (_event, imagePath) => {
+  handle('icon:apply', async (_event, imagePath) => {
     return iconManager.applyCustomIcon(imagePath);
   });
 
-  ipcMain.handle('icon:reset', async () => {
+  handle('icon:reset', async () => {
     return iconManager.resetIcon();
   });
 
-  ipcMain.handle('icon:current', async () => {
+  handle('icon:current', async () => {
     return iconManager.currentCustomIcon();
   });
 
-  ipcMain.handle('dialog:selectFolder', async () => {
+  handle('dialog:selectFolder', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory'],
     });
@@ -242,7 +256,7 @@ function registerIpcHandlers() {
     return result.filePaths[0];
   });
 
-  ipcMain.handle('git:getChanges', async (_event, folder, options) => {
+  handle('git:getChanges', async (_event, folder, options) => {
     try {
       return await git.getChanges(folder, options);
     } catch (err) {
@@ -250,7 +264,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('git:getBranches', async (_event, folder) => {
+  handle('git:getBranches', async (_event, folder) => {
     try {
       return await git.getBranches(folder);
     } catch (err) {
@@ -258,7 +272,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('git:getCommits', async (_event, folder) => {
+  handle('git:getCommits', async (_event, folder) => {
     try {
       return await git.getCommits(folder);
     } catch (err) {
@@ -266,25 +280,28 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('settings:get', async () => {
+  handle('settings:get', async () => {
     return settingsStore.getPublicSettings();
   });
 
-  ipcMain.handle('settings:save', async (_event, settings) => {
+  handle('settings:save', async (_event, settings) => {
     return settingsStore.saveSettings(settings);
   });
 
   // 预设导出：JSON 文件，含格式标识与版本，便于校验与后续兼容
-  ipcMain.handle('preset:export', async (event) => {
+  // 外部 Agent 可传 filePath 跳过保存对话框
+  handle('preset:export', async (_event, options) => {
     const { presets } = await settingsStore.getSettings();
     if (!Array.isArray(presets) || !presets.length) {
       throw new Error('暂无可导出的预设');
     }
-    const result = await dialog.showSaveDialog({
-      title: '导出评审预设',
-      defaultPath: 'reviewflow-presets.json',
-      filters: [{ name: 'JSON', extensions: ['json'] }],
-    });
+    const result = typeof options?.filePath === 'string' && options.filePath
+      ? { canceled: false, filePath: options.filePath }
+      : await dialog.showSaveDialog({
+        title: '导出评审预设',
+        defaultPath: 'reviewflow-presets.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
     if (result.canceled || !result.filePath) return null;
     const payload = {
       app: 'reviewflow',
@@ -298,12 +315,14 @@ function registerIpcHandlers() {
   });
 
   // 预设导入：逐项校验与规范化；重名加「（导入）」后缀，id 冲突时重新生成
-  ipcMain.handle('preset:import', async (event) => {
-    const result = await dialog.showOpenDialog({
-      title: '导入评审预设',
-      properties: ['openFile'],
-      filters: [{ name: 'JSON', extensions: ['json'] }],
-    });
+  handle('preset:import', async (_event, options) => {
+    const result = typeof options?.filePath === 'string' && options.filePath
+      ? { canceled: false, filePaths: [options.filePath] }
+      : await dialog.showOpenDialog({
+        title: '导入评审预设',
+        properties: ['openFile'],
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
     if (result.canceled || !result.filePaths.length) return null;
     let data;
     try {
@@ -317,7 +336,7 @@ function registerIpcHandlers() {
     return { added: imported.length, presets };
   });
 
-  ipcMain.handle('ai:analyzeOverview', async (event, payload) => {
+  handle('ai:analyzeOverview', async (event, payload) => {
     try {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
@@ -328,7 +347,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ai:analyzeOverviewMulti', async (event, payload) => {
+  handle('ai:analyzeOverviewMulti', async (event, payload) => {
     try {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
@@ -339,7 +358,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ai:explainChange', async (event, payload) => {
+  handle('ai:explainChange', async (event, payload) => {
     try {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
@@ -350,7 +369,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ai:analyzeFile', async (event, payload) => {
+  handle('ai:analyzeFile', async (event, payload) => {
     try {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
@@ -361,7 +380,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ai:explainFull', async (event, payload) => {
+  handle('ai:explainFull', async (event, payload) => {
     try {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
@@ -372,7 +391,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('review:save', async (_event, payload) => {
+  handle('review:save', async (_event, payload) => {
     try {
       return store.saveReview(payload);
     } catch (err) {
@@ -380,7 +399,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('review:updateStats', async (_event, payload) => {
+  handle('review:updateStats', async (_event, payload) => {
     try {
       return store.updateReviewStats(payload);
     } catch (err) {
@@ -388,58 +407,58 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('review:list', async (_event, folder, options) => {
+  handle('review:list', async (_event, folder, options) => {
     return store.listReviews(folder, options);
   });
-  ipcMain.handle('review:get', async (_event, payload) => store.getReview(payload || {}));
-  ipcMain.handle('review:delete', async (_event, payload) => store.deleteReview(payload || {}));
-  ipcMain.handle('review:rename', async (_event, payload) => store.renameReview(payload || {}));
-  ipcMain.handle('review:setPinned', async (_event, payload) => store.setReviewPinned(payload || {}));
-  ipcMain.handle('chat:list', async (_event, payload) => chatStore.list(payload || {}));
-  ipcMain.handle('chat:get', async (_event, payload) => chatStore.get(payload || {}));
-  ipcMain.handle('chat:create', async (_event, payload) => chatService.create(payload || {}));
-  ipcMain.handle('chat:send', async (event, payload) => {
+  handle('review:get', async (_event, payload) => store.getReview(payload || {}));
+  handle('review:delete', async (_event, payload) => store.deleteReview(payload || {}));
+  handle('review:rename', async (_event, payload) => store.renameReview(payload || {}));
+  handle('review:setPinned', async (_event, payload) => store.setReviewPinned(payload || {}));
+  handle('chat:list', async (_event, payload) => chatStore.list(payload || {}));
+  handle('chat:get', async (_event, payload) => chatStore.get(payload || {}));
+  handle('chat:create', async (_event, payload) => chatService.create(payload || {}));
+  handle('chat:send', async (event, payload) => {
     ai.setChunkSender((runId, text) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
     });
     return chatService.send(payload || {});
   });
-  ipcMain.handle('fileAnalysis:list', async (_event, payload) => ai.listFileAnalyses(payload || {}));
-  ipcMain.handle('ai:estimate', async (_event, payload) => estimateRun(payload || {}));
-  ipcMain.handle('fix:generatePatch', async (event, payload) => {
+  handle('fileAnalysis:list', async (_event, payload) => ai.listFileAnalyses(payload || {}));
+  handle('ai:estimate', async (_event, payload) => estimateRun(payload || {}));
+  handle('fix:generatePatch', async (event, payload) => {
     ai.setChunkSender((runId, text) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
     });
     return fixLoop.generatePatch(payload || {});
   });
-  ipcMain.handle('fix:applyPatch', async (_event, payload) => fixLoop.applyPatch(payload || {}));
-  ipcMain.handle('fix:revertPatch', async (_event, payload) => fixLoop.revertPatch(payload || {}));
-  ipcMain.handle('fix:listPatches', async (_event, payload) => fixLoop.listPatches(payload || {}));
-  ipcMain.handle('fix:openPatch', async (_event, payload) => fixLoop.openPatch(payload || {}));
-  ipcMain.handle('fix:verifyFinding', async (event, payload) => {
+  handle('fix:applyPatch', async (_event, payload) => fixLoop.applyPatch(payload || {}));
+  handle('fix:revertPatch', async (_event, payload) => fixLoop.revertPatch(payload || {}));
+  handle('fix:listPatches', async (_event, payload) => fixLoop.listPatches(payload || {}));
+  handle('fix:openPatch', async (_event, payload) => fixLoop.openPatch(payload || {}));
+  handle('fix:verifyFinding', async (event, payload) => {
     ai.setChunkSender((runId, text) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
     });
     return fixLoop.verifyFinding(payload || {});
   });
-  ipcMain.handle('fix:handoffPrompt', async (_event, payload) => fixLoop.handoffPrompt(payload || {}));
+  handle('fix:handoffPrompt', async (_event, payload) => fixLoop.handoffPrompt(payload || {}));
 
-  ipcMain.handle('checklist:list', async (_event, folder) => {
+  handle('checklist:list', async (_event, folder) => {
     return store.listChecklist(folder);
   });
 
-  ipcMain.handle('checklist:save', async (_event, payload) => {
+  handle('checklist:save', async (_event, payload) => {
     return store.saveChecklist(payload && payload.folder, payload && payload.items);
   });
 
-  ipcMain.handle('checklist:setStatus', async (_event, payload) => {
+  handle('checklist:setStatus', async (_event, payload) => {
     try {
       return store.setChecklistStatus(payload);
     } catch (err) {
       throw new Error(`更新清单状态失败：${err.message}`);
     }
   });
-  ipcMain.handle('checklist:clear', async (_event, payload) => {
+  handle('checklist:clear', async (_event, payload) => {
     try {
       const next = store.clearChecklist(payload || {});
       fixLoop.clearPatches(payload.folder);
@@ -448,38 +467,40 @@ function registerIpcHandlers() {
       throw new Error(`清空问题清单失败：${err.message}`);
     }
   });
-  ipcMain.handle('checklist:ruleSuggestions', async (_event, payload) => projectRules.listSuggestions(payload));
-  ipcMain.handle('checklist:dismissRuleSuggestion', async (_event, payload) => projectRules.dismissSuggestion(payload));
-  ipcMain.handle('rules:previewAppend', async (_event, payload) => projectRules.previewAppend(payload));
-  ipcMain.handle('rules:append', async (_event, payload) => projectRules.appendRule(payload));
-  ipcMain.handle('rules:effective', async (_event, payload) => require('./effectiveRules').getEffectiveRules(payload || {}));
+  handle('checklist:ruleSuggestions', async (_event, payload) => projectRules.listSuggestions(payload));
+  handle('checklist:dismissRuleSuggestion', async (_event, payload) => projectRules.dismissSuggestion(payload));
+  handle('rules:previewAppend', async (_event, payload) => projectRules.previewAppend(payload));
+  handle('rules:append', async (_event, payload) => projectRules.appendRule(payload));
+  handle('rules:effective', async (_event, payload) => require('./effectiveRules').getEffectiveRules(payload || {}));
 
-  ipcMain.handle('review:export', async (_event, payload) => {
+  handle('review:export', async (_event, payload) => {
     const ext = payload && payload.ext === 'html' ? 'html' : 'md';
     // 兼容旧字段 markdown 兜底
     const content = payload && typeof payload.content === 'string'
       ? payload.content
       : String((payload && payload.markdown) || '');
-    const result = await dialog.showSaveDialog({
-      defaultPath: payload && payload.defaultName,
-      filters: ext === 'html'
-        ? [{ name: 'HTML', extensions: ['html'] }]
-        : [{ name: 'Markdown', extensions: ['md'] }],
-    });
+    const result = typeof payload?.filePath === 'string' && payload.filePath
+      ? { canceled: false, filePath: payload.filePath }
+      : await dialog.showSaveDialog({
+        defaultPath: payload && payload.defaultName,
+        filters: ext === 'html'
+          ? [{ name: 'HTML', extensions: ['html'] }]
+          : [{ name: 'Markdown', extensions: ['md'] }],
+      });
     if (result.canceled || !result.filePath) return null;
     await fs.promises.writeFile(result.filePath, content, 'utf8');
     return result.filePath;
   });
 
-  ipcMain.handle('recent:list', async () => {
+  handle('recent:list', async () => {
     return store.getRecentProjects();
   });
 
-  ipcMain.handle('recent:add', async (_event, folder) => {
+  handle('recent:add', async (_event, folder) => {
     return store.addRecentProject(folder);
   });
 
-  ipcMain.handle('watch:start', async (event, folder) => {
+  handle('watch:start', async (event, folder) => {
     try {
       startWatcher(folder, event.sender);
     } catch (err) {
@@ -488,11 +509,11 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('watch:stop', async () => {
+  handle('watch:stop', async () => {
     stopWatcher();
   });
 
-  ipcMain.handle('ai:testConnection', async (_event, settings) => {
+  handle('ai:testConnection', async (_event, settings) => {
     try {
       return await ai.testConnection(settings);
     } catch (err) {
@@ -500,21 +521,21 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ai:listModels', async (_event, settings) => {
+  handle('ai:listModels', async (_event, settings) => {
     return ai.listModels(settings);
   });
 
-  ipcMain.handle('ai:getCurrentRun', async () => ai.getCurrentRun());
+  handle('ai:getCurrentRun', async () => ai.getCurrentRun());
 
-  ipcMain.handle('ai:listRuns', async () => ai.getRuns());
+  handle('ai:listRuns', async () => ai.getRuns());
 
-  ipcMain.handle('ai:getRunPrompt', async (_event, runId) => ai.getRunPrompt(runId));
+  handle('ai:getRunPrompt', async (_event, runId) => ai.getRunPrompt(runId));
 
-  ipcMain.handle('ai:cancel', async (_event, runId) => ai.cancelRun(runId));
+  handle('ai:cancel', async (_event, runId) => ai.cancelRun(runId));
 
-  ipcMain.handle('ai:pause', async (_event, runId) => ai.pauseRun(runId));
+  handle('ai:pause', async (_event, runId) => ai.pauseRun(runId));
 
-  ipcMain.handle('ai:resume', async (_event, runId) => {
+  handle('ai:resume', async (_event, runId) => {
     try {
       return persistCompleted(await ai.resumeRun(runId));
     } catch (err) {
@@ -522,7 +543,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ai:explainFollowUp', async (event, payload) => {
+  handle('ai:explainFollowUp', async (event, payload) => {
     try {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
@@ -533,7 +554,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ai:reviewFollowUp', async (event, payload) => {
+  handle('ai:reviewFollowUp', async (event, payload) => {
     try {
       ai.setChunkSender((runId, text) => {
         if (!event.sender.isDestroyed()) event.sender.send('ai:chunk', { runId, text });
@@ -544,7 +565,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:list', async (_event, folder) => {
+  handle('plan:list', async (_event, folder) => {
     try {
       return planStore.listPlans(folder);
     } catch (err) {
@@ -552,7 +573,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:create', async (_event, payload) => {
+  handle('plan:create', async (_event, payload) => {
     try {
       return planStore.createPlan(payload);
     } catch (err) {
@@ -560,7 +581,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:addImage', async (_event, payload) => {
+  handle('plan:addImage', async (_event, payload) => {
     try {
       return planStore.addPlanImage(payload);
     } catch (err) {
@@ -568,7 +589,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:removeImage', async (_event, payload) => {
+  handle('plan:removeImage', async (_event, payload) => {
     try {
       return planStore.removePlanImage(payload);
     } catch (err) {
@@ -576,7 +597,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:detail', async (_event, folder, planId) => {
+  handle('plan:detail', async (_event, folder, planId) => {
     try {
       return planStore.getPlanDetail(folder, planId);
     } catch (err) {
@@ -584,7 +605,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:generate', async (event, payload) => {
+  handle('plan:generate', async (event, payload) => {
     try {
       const { folder, planId, extraRequirement, runId } = payload || {};
       const detail = planStore.getPlanDetail(folder, planId);
@@ -605,7 +626,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:delete', async (_event, folder, planId) => {
+  handle('plan:delete', async (_event, folder, planId) => {
     try {
       return planStore.deletePlan(folder, planId);
     } catch (err) {
@@ -613,7 +634,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:setActive', async (_event, folder, planId) => {
+  handle('plan:setActive', async (_event, folder, planId) => {
     try {
       return planStore.setActivePlan(folder, planId);
     } catch (err) {
@@ -621,7 +642,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:getActive', async (_event, folder) => {
+  handle('plan:getActive', async (_event, folder) => {
     try {
       return planStore.getActivePlan(folder);
     } catch (err) {
@@ -629,7 +650,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:fetchPrdUrl', async (_event, url) => {
+  handle('plan:fetchPrdUrl', async (_event, url) => {
     try {
       return await urlFetch.fetchPrdFromUrl(url);
     } catch (err) {
@@ -637,7 +658,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('plan:fetchDesignUrl', async (_event, url) => {
+  handle('plan:fetchDesignUrl', async (_event, url) => {
     try {
       return await urlFetch.fetchDesignFromUrl(url);
     } catch (err) {
@@ -645,7 +666,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('update:check', async () => {
+  handle('update:check', async () => {
     try {
       return await updateChecker.checkForUpdates();
     } catch (err) {
@@ -655,7 +676,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('update:download', async (event, dmgUrl) => {
+  handle('update:download', async (event, dmgUrl) => {
     const { shell } = require('electron');
     try {
       const filePath = await updateChecker.downloadUpdate(dmgUrl, (percent) => {
@@ -669,6 +690,7 @@ function registerIpcHandlers() {
         : `下载失败：${err.message}`);
     }
   });
+  return handlers;
 }
 
 // macOS 标准应用菜单：不注册时 ⌘C/⌘V/⌘A/⌘Z 在输入框全部失效（Electron 由菜单 role 触发编辑命令）
@@ -721,8 +743,14 @@ app.whenReady().then(() => {
   }
   iconManager.applyOnStartup();
   registerAppMenu();
-  registerIpcHandlers();
+  const handlers = registerIpcHandlers();
   createWindow();
+  agentApi = createAgentApi(handlers);
+  const api = agentApi;
+  ipcMain.handle('agentApi:info', async () => api.info());
+  ipcMain.handle('agentApi:setEnabled', async (_event, enabled) => api.setEnabled(enabled === true));
+  ipcMain.handle('agentApi:regenerateToken', async () => api.regenerateToken());
+  api.start().catch((err) => console.warn(`外部 Agent 接口启动失败：${err.message}`));
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -741,7 +769,7 @@ app.on('before-quit', (event) => {
   if (quitCleanupStarted) return;
   quitCleanupStarted = true;
   stopWatcher();
-  terminateActiveChildren().finally(() => {
+  Promise.allSettled([terminateActiveChildren(), agentApi ? agentApi.stop() : Promise.resolve()]).finally(() => {
     quitCleanupFinished = true;
     app.quit();
   });

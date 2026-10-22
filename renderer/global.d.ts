@@ -255,7 +255,17 @@ interface AutoReviewApi {
   onAiChunk(callback: (data: any) => void): Unsubscribe;
   onRunsChanged(callback: (runs: Awaited<ReturnType<AutoReviewApi['listRuns']>>) => void): Unsubscribe;
   onFsChanged(callback: () => void): Unsubscribe;
+  agentApiInfo(): Promise<AgentApiInfo>;
+  agentApiSetEnabled(enabled: boolean): Promise<AgentApiInfo>;
+  agentApiRegenerateToken(): Promise<AgentApiInfo>;
+  onAgentChanged(callback: (change: AgentChange) => void): Unsubscribe;
+  onAgentOpenProject(callback: (detail: { folder: string }) => void): Unsubscribe;
 }
+interface AgentApiInfo {
+  readonly enabled: boolean; readonly running: boolean; readonly url: string | null; readonly token: string;
+  readonly configFile: string; readonly toolCount: number; readonly mcpConfig: Record<string, unknown>;
+}
+interface AgentChange { readonly tool: string; readonly folder: string | null; readonly scopes: string[] }
 
 interface Window {
   autoReview: AutoReviewApi;

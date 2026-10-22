@@ -93,6 +93,19 @@ contextBridge.exposeInMainWorld('autoReview', {
     ipcRenderer.on('ai:runs', listener);
     return () => ipcRenderer.removeListener('ai:runs', listener);
   },
+  agentApiInfo: () => ipcRenderer.invoke('agentApi:info'),
+  agentApiSetEnabled: (enabled) => ipcRenderer.invoke('agentApi:setEnabled', enabled),
+  agentApiRegenerateToken: () => ipcRenderer.invoke('agentApi:regenerateToken'),
+  onAgentChanged: (callback) => {
+    const listener = (_event, change) => callback(change);
+    ipcRenderer.on('agent:changed', listener);
+    return () => ipcRenderer.removeListener('agent:changed', listener);
+  },
+  onAgentOpenProject: (callback) => {
+    const listener = (_event, detail) => callback(detail);
+    ipcRenderer.on('agent:openProject', listener);
+    return () => ipcRenderer.removeListener('agent:openProject', listener);
+  },
   onFsChanged: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('fs:changed', listener);
