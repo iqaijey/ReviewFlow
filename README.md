@@ -84,6 +84,52 @@ OpenCode 和 Kimi CLI 没有强制的只读沙箱，所以修复功能不对它�
 - API Key 保存在 userData 下的 `settings.json`，文件权限为 0600，界面中不会完整显示。它没有放进 macOS 钥匙串，原因是 ad-hoc 签名的构建每次更新后都会触发钥匙串访问弹窗。
 - 评审时，diff、项目规则和需求方案会发送给你当前选择的 AI 后端（API 服务或本机 CLI 所连接的服务）。
 
+## 外部 Agent 接口
+
+其他 AI Agent（Claude Code、Codex、OpenCode 等）可以通过 MCP 或本机 HTTP 操作 ReviewFlow，界面能做的都能做：拉取改动、发起评审、处理问题清单、生成/应用/撤销补丁、复核、追问、需求方案、设置等。具体配置在「AI 设置 → 外部 Agent 接口」中查看和复制。
+
+- 权限：与界面相同，且调用时不再弹确认（包括应用补丁、清空清单、读取明文 API Key 的 `settings_getSecret`）。不需要时可在设置中关闭。
+- 访问控制：只监听 `127.0.0.1`（默认端口 47821，被占用时改用随机端口），每个请求都要带 `Authorization: Bearer <令牌>`；带浏览器 `Origin` 头或非本机 `Host` 的请求一律拒绝。端口与令牌保存在 userData 下的 `agent-api.json`（权限 0600），可在设置中重新生成令牌。
+- 界面同步：Agent 改动问题清单、历史、方案、设置或工作区后，界面会自动刷新；`app_openProject` 可以让窗口切换到指定项目。
+
+### MCP
+
+MCP 桥随应用一起打包，用应用自带的 Electron 以 Node 模式运行；ReviewFlow 未运行时会自动启动它。Claude Code / OpenCode 等 JSON 配置示例：
+
+```json
+{
+  "mcpServers": {
+    "reviewflow": {
+      "command": "/Applications/ReviewFlow.app/Contents/MacOS/ReviewFlow",
+      "args": ["/Applications/ReviewFlow.app/Contents/Resources/app.asar/main/agentApi/mcpBridge.js"],
+      "env": { "ELECTRON_RUN_AS_NODE": "1" }
+    }
+  }
+}
+```
+
+Codex（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.reviewflow]
+command = "/Applications/ReviewFlow.app/Contents/MacOS/ReviewFlow"
+args = ["/Applications/ReviewFlow.app/Contents/Resources/app.asar/main/agentApi/mcpBridge.js"]
+env = { ELECTRON_RUN_AS_NODE = "1" }
+```
+
+常用流程：`changes_summary` 看改动 → `review_start` 评审 → `checklist_list` 查看问题 → `fix_generatePatch` / `fix_applyPatch` 修复 → `fix_verifyFinding` 复核 → `checklist_setStatus` 更新状态。评审、生成补丁等耗时操作最多等待 `waitSec` 秒（默认 50，最大 600），没跑完会返回 `state: "running"` 和 `jobId`，再用 `agent_waitJob` 继续等待，或用 `ai_cancel` 终止。
+
+### HTTP
+
+```bash
+TOKEN=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/Library/Application Support/auto-review/agent-api.json")))["token"])')
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:47821/v1/tools          # 工具列表与参数 JSON Schema
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"folder":"/path/to/project"}' http://127.0.0.1:47821/v1/tools/checklist_list
+```
+
+返回 `{"ok": true, "result": ...}` 或 `{"ok": false, "error": "..."}`。
+
 ## 运行
 
 ```bash
