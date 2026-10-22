@@ -767,6 +767,22 @@ bus.addEventListener('changes:rescan', () => {
   rescan();
 });
 
+// 外部 Agent 通过本机接口改了数据：只刷新当前项目相关视图；切换项目走正常打开流程
+if (typeof api.onAgentChanged === 'function') {
+  api.onAgentChanged((change) => {
+    if (change.folder && change.folder !== state.folder) return;
+    bus.dispatchEvent(new CustomEvent('agent:changed', { detail: change }));
+    if (change.scopes.includes('plan')) bus.dispatchEvent(new CustomEvent('plan:changed'));
+    if (change.scopes.includes('settings')) bus.dispatchEvent(new CustomEvent('settings:saved'));
+    if (change.scopes.includes('workspace')) rescan();
+  });
+}
+if (typeof api.onAgentOpenProject === 'function') {
+  api.onAgentOpenProject(({ folder }) => {
+    if (folder && folder !== state.folder) loadProject(folder);
+  });
+}
+
 // .md 容器内的代码块：点击复制全部代码，不影响其他点击行为
 document.addEventListener('click', (ev) => {
   const target = /** @type {Element | null} */ (ev.target);

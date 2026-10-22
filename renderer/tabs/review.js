@@ -233,6 +233,13 @@ export default {
       historyPanel.textContent = '';
     });
 
+    bus.addEventListener('agent:changed', (ev) => {
+      const change = /** @type {CustomEvent<AgentChange>} */ (ev).detail;
+      if (!state.folder) return;
+      if (change.scopes.includes('findings')) findingsView.reloadFromStore(state.folder);
+      if (change.scopes.includes('history') && historyPanel.style.display !== 'none') loadHistory();
+    });
+
     bus.addEventListener('plan:changed', () => {
       toolbar.refreshPlanHint();
       fileCards.rehydrateFileAnalyses();

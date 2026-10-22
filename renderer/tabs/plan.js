@@ -765,6 +765,9 @@ export default {
     // 文件夹切换后重新加载列表，并丢弃属于旧项目的编辑状态；
     // 同文件夹的改动重扫（fs.watch 自动触发）只刷新列表，不清空正在编辑/生成的内容
     let knownFolder = null;
+    bus.addEventListener('agent:changed', (ev) => {
+      if (/** @type {CustomEvent<AgentChange>} */ (ev).detail.scopes.includes('plan')) loadList();
+    });
     bus.addEventListener('changes:loaded', () => {
       if (state.folder !== knownFolder) {
         knownFolder = state.folder;

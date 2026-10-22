@@ -1,5 +1,6 @@
-// AI 设置：分组卡片布局 —— 接入方式 / 模型与参数 / 评审内容 / 评审预设 / 个性化与应用
+// AI 设置：分组卡片布局 —— 接入方式 / 模型与参数 / 评审内容 / 评审预设 / 个性化与应用 / 外部 Agent 接口
 import { confirmDialog } from '../lib/dialog.js';
+import { createAgentApiCard } from './settings/agentApiCard.js';
 
 const DEFAULT_EXCLUDE_PATTERNS = [
   '**/package-lock.json',
@@ -965,6 +966,7 @@ export default {
     versionField.appendChild(updateStatus);
     cardApp.appendChild(versionField);
     form.appendChild(cardApp);
+    form.appendChild(createAgentApiCard({ el, api, errText, makeCard, makeInlineStatus }));
 
     let currentVersionText = '';
     if (typeof api.getVersion === 'function') {
@@ -1092,7 +1094,8 @@ export default {
     container.appendChild(form);
     container.appendChild(actions);
 
-    api.getSettings().then((s) => {
+    /** @param {Settings} s */
+    const fillForm = (s) => {
       const merged = { ...DEFAULTS, ...(s || {}) };
       (radios[merged.backend] || radios.api).checked = true;
       syncBackendFields();
@@ -1119,7 +1122,18 @@ export default {
         : DEFAULT_EXCLUDE_PATTERNS;
       excludePatternsInput.value = loadedPatterns.join('\n');
       renderPricingRows(merged.pricing || {});
-    }).catch(() => {
+    };
+
+    // 外部 Agent 改了设置时重新载入表单，避免随后点「保存」用旧值覆盖；未保存的手动修改会被丢弃
+    bus.addEventListener('agent:changed', (ev) => {
+      if (!/** @type {CustomEvent<AgentChange>} */ (ev).detail.scopes.includes('settings')) return;
+      api.getSettings().then((s) => {
+        fillForm(s);
+        showMessage('设置已被外部 Agent 修改，表单已重新载入', true);
+      }).catch((err) => showMessage(`重新载入设置失败：${errText(err)}`, false));
+    });
+
+    api.getSettings().then(fillForm).catch(() => {
       showMessage('读取设置失败，请检查后再保存', false);
       radios.api.checked = true;
       syncBackendFields();

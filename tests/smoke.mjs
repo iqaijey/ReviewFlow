@@ -546,6 +546,37 @@ window.__smokeUnsub = window.autoReview.onAiChunk(({ text }) => {
   const resultHtml = await cdp.eval(
     `(document.querySelector('.tab-panel[data-tab-id="review"] .review-result') || {}).innerHTML`);
   check('评审结果已渲染为 HTML（导出内容来源非空）', !!(resultHtml && resultHtml.length > 0));
+
+  // ---------- 外部 Agent 接口：本机 HTTP（MCP 桥转发到同一接口） ----------
+  const agentFile = path.join(userData, 'agent-api.json');
+  const agentCfg = fs.existsSync(agentFile) ? JSON.parse(fs.readFileSync(agentFile, 'utf8')) : {};
+  check('外部 Agent 接口已启动且配置文件权限为 600',
+    typeof agentCfg.url === 'string' && (fs.statSync(agentFile).mode & 0o777) === 0o600, `实际：${JSON.stringify({ url: agentCfg.url })}`);
+  const agentCall = async (route, body, token = agentCfg.token) => {
+    const res = await fetch(`${agentCfg.url}${route}`, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: res.status, json: await res.json() };
+  };
+  if (agentCfg.url) {
+    check('外部 Agent 接口拒绝错误令牌', (await agentCall('/v1/health', undefined, 'bad')).status === 401);
+    const summary = await agentCall('/v1/tools/changes_summary', { folder: repo });
+    const summaryFiles = (summary.json.result?.files || []).map((f) => path.basename(f.path));
+    check('外部 Agent：changes_summary 列出改动文件', EXPECTED_FILES.every((f) => summaryFiles.includes(f)), `实际：${summaryFiles.join(',')}`);
+    const started = await agentCall('/v1/tools/review_start', { folder: repo, title: 'agent-smoke', waitSec: 90 });
+    const reviewId = started.json.result?.reviewId;
+    check('外部 Agent：review_start 完成评审并写入历史', !!reviewId && !!started.json.result.markdown,
+      `实际：${JSON.stringify(started.json).slice(0, 300)}`);
+    const history = await agentCall('/v1/tools/review_list', { folder: repo });
+    check('外部 Agent：review_list 可查到该评审', (history.json.result || []).some((e) => e.id === reviewId));
+    const marker = 'AGENT_SMOKE_FINDING';
+    const saved = await agentCall('/v1/tools/checklist_save', { folder: repo, items: [{ text: marker, severity: '高', category: '正确性' }] });
+    check('外部 Agent：checklist_save 写入问题清单', saved.json.ok === true, `实际：${JSON.stringify(saved.json).slice(0, 200)}`);
+    const uiSynced = await waitFor(`document.querySelector('.tab-panel[data-tab-id="review"]').innerText.includes('${marker}')`, 10_000);
+    check('外部 Agent 修改后界面问题清单自动刷新', uiSynced);
+  }
 }
 
 const watchdog = setTimeout(() => {
