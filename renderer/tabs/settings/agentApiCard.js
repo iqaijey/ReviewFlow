@@ -38,7 +38,7 @@ export function createAgentApiCard({ el, api, errText, makeCard, makeInlineStatu
   mcpField.appendChild(el('label', { class: 'settings-label' }, 'MCP 配置'));
   mcpField.appendChild(mcpPre);
   mcpField.appendChild(el('div', { class: 'settings-hint' },
-    '加入 Agent 的 MCP 配置（Claude Code 的 .mcp.json、OpenCode 的 mcp 段等，Codex 需改写为 TOML）。ReviewFlow 未运行时会被自动启动。'));
+    '这是 Claude Code（.mcp.json）等通用的 mcpServers 格式；OpenCode、Codex 的写法见 README。ReviewFlow 未运行时会被自动启动。'));
   const mcpActions = el('div', { class: 'settings-section-actions' });
   mcpActions.appendChild(copyMcpBtn);
   mcpField.appendChild(mcpActions);

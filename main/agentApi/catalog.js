@@ -172,7 +172,8 @@ const TOOLS = [
   ipc('plan:generate', '根据 PRD 与设计稿生成技术方案', {
     params: { folder, planId, extraRequirement: S('额外要求'), runId, waitSec }, required: ['folder', 'planId'], long: true, autoIds: ['runId'], scopes: ['plan'] }),
   ipc('plan:delete', '删除方案', { params: { folder, planId }, required: ['folder', 'planId'], args: ['folder', 'planId'], scopes: ['plan'] }),
-  ipc('plan:setActive', '设置评审时参照的方案（planId 传空字符串取消）', { params: { folder, planId }, required: ['folder', 'planId'], args: ['folder', 'planId'], scopes: ['plan'] }),
+  ipc('plan:setActive', '设置评审时参照的方案；planId 传 null 取消启用', {
+    params: { folder, planId: { type: ['string', 'null'], description: '方案 id；null 表示取消启用' } }, required: ['folder', 'planId'], args: ['folder', 'planId'], scopes: ['plan'] }),
   ipc('plan:getActive', '当前启用的方案', { params: { folder }, required: ['folder'], args: ['folder'] }),
   ipc('plan:fetchPrdUrl', '抓取网页 PRD 文本', { params: { url: S('网址') }, required: ['url'], args: ['url'] }),
   ipc('plan:fetchDesignUrl', '抓取设计稿图片或网页截图', { params: { url: S('网址') }, required: ['url'], args: ['url'] }),
