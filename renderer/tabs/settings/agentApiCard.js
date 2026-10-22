@@ -15,15 +15,16 @@ export function createAgentApiCard({ el, api, errText, makeCard, makeInlineStatu
     '让 Claude Code、Codex、OpenCode 等 Agent 通过 MCP 或本机 HTTP 操作 ReviewFlow：评审、问题清单、补丁、复核、方案、设置等界面能做的都能做');
   if (typeof api.agentApiInfo !== 'function') return card;
 
-  const switchLabel = el('label', { class: 'plan-switch' });
-  const enabledInput = /** @type {HTMLInputElement} */ (el('input', { type: 'checkbox' }));
+  // 状态文字放在 label 外：否则点击或选中地址文字会误触开关、把接口关掉
+  const switchLabel = el('label', { class: 'plan-switch', title: '启用或关闭外部 Agent 接口' });
+  const enabledInput = /** @type {HTMLInputElement} */ (el('input', { type: 'checkbox', 'aria-label': '启用外部 Agent 接口' }));
   switchLabel.appendChild(enabledInput);
   switchLabel.appendChild(el('span', { class: 'plan-switch-track' }));
-  const stateText = el('span', {}, '读取中…');
-  switchLabel.appendChild(stateText);
+  const stateText = el('span', { class: 'settings-hint' }, '读取中…');
   const status = makeInlineStatus();
   const stateRow = el('div', { class: 'icon-row' });
   stateRow.appendChild(switchLabel);
+  stateRow.appendChild(stateText);
   stateRow.appendChild(status.box);
   const stateField = el('div', { class: 'settings-field' });
   stateField.appendChild(el('label', { class: 'settings-label' }, '状态'));
