@@ -2,6 +2,7 @@
 // 拒绝带 Origin 的请求并校验 Host，防止网页借浏览器跨站或 DNS 重绑定调用。
 const http = require('http');
 const crypto = require('crypto');
+const { readGuide } = require('./guide');
 
 const MAX_BODY_BYTES = 50 * 1024 * 1024;
 
@@ -71,8 +72,13 @@ function createAgentServer({ getToken, listTools, callTool, health }) {
       const url = new URL(String(req.url || '/'), 'http://127.0.0.1');
       if (req.method === 'GET' && url.pathname === '/v1/health') return send(200, { ok: true, ...health() });
       if (req.method === 'GET' && url.pathname === '/v1/tools') return send(200, { ok: true, tools: listTools() });
+      if (req.method === 'GET' && url.pathname === '/v1/guide') {
+        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(readGuide());
+        return;
+      }
       const match = /^\/v1\/tools\/([A-Za-z0-9_-]{1,64})$/.exec(url.pathname);
-      if (!match) return send(404, { ok: false, error: '未知路径；可用：GET /v1/health、GET /v1/tools、POST /v1/tools/<name>' });
+      if (!match) return send(404, { ok: false, error: '未知路径；可用：GET /v1/health、GET /v1/tools、GET /v1/guide、POST /v1/tools/<name>' });
       if (req.method !== 'POST') return send(405, { ok: false, error: '调用工具请使用 POST' });
       if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) return send(415, { ok: false, error: 'Content-Type 必须是 application/json' });
       const text = await readBody(req);

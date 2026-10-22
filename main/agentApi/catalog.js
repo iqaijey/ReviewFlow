@@ -56,6 +56,7 @@ function readImageFile(input) {
 
 /** @type {ToolDef[]} */
 const TOOLS = [
+  composite('agent_guide', '首次使用 ReviewFlow 前先调用：返回操作手册（Markdown），含调用约定、长任务处理、错误处理、标准流程、行为守则和全部工具索引。', {}),
   composite('review_start', '推荐入口：按改动来源拉取 diff 并发起一次评审（kind=review 多角度评审 / full 完整讲解），完成后自动保存历史并合并问题清单。耗时较长，见 waitSec。', {
     params: { folder, kind: S('review 或 full，默认 review', { enum: ['review', 'full'] }), ...source, title: S('历史记录标题'),
       noiseLevel: noise, compareWithLast: B('对比上次评审'), usePlan: B('参照当前启用的需求方案，默认 true'),

@@ -8,6 +8,7 @@ const readline = require('readline');
 const { listTools } = require('./catalog');
 const { defaultUserDataDir, readConfig } = require('./config');
 const { challengeProof } = require('./server');
+const { readGuide } = require('./guide');
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const LAUNCH_TIMEOUT_MS = 60_000;
@@ -112,6 +113,8 @@ async function ensureApp() {
 
 /** @param {string} name @param {unknown} args */
 async function callTool(name, args) {
+  // 手册随桥一起打包，读取时不需要也不应启动应用
+  if (name === 'agent_guide') return readGuide();
   for (let attempt = 0; attempt < 2; attempt++) {
     const config = await ensureApp();
     const { status, json } = await request('POST', /** @type {string} */ (config.url), config.token, `/v1/tools/${encodeURIComponent(name)}`, args || {});
@@ -144,8 +147,9 @@ async function handle(msg) {
         protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'reviewflow', version: '1.0.0' },
-        instructions: 'ReviewFlow 代码评审应用。常用流程：changes_summary 看改动 → review_start 评审 → checklist_list 查看问题清单 → '
-          + 'fix_generatePatch / fix_applyPatch 修复 → fix_verifyFinding 复核 → checklist_setStatus 更新状态。所有 folder 参数都是项目根目录绝对路径。',
+        instructions: 'ReviewFlow 是用户本机的代码评审应用，工具直接作用于用户的真实数据和工作区。'
+          + '第一次使用前必须先调用 agent_guide 阅读操作手册，并遵守其中的行为守则（改数据或工作区前先征得用户同意、不输出 API Key 等）。'
+          + '常用流程：changes_summary → review_start → checklist_list → fix_generatePatch / fix_applyPatch → fix_verifyFinding。folder 参数都是项目根目录绝对路径。',
       };
     } else if (method === 'ping') {
       result = {};
@@ -154,7 +158,7 @@ async function handle(msg) {
     } else if (method === 'tools/call') {
       try {
         const value = await callTool(String(params && params.name), params && params.arguments);
-        result = { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
+        result = { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] };
       } catch (error) {
         result = { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true };
       }

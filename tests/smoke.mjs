@@ -562,6 +562,8 @@ window.__smokeUnsub = window.autoReview.onAiChunk(({ text }) => {
   };
   if (agentCfg.url) {
     check('外部 Agent 接口拒绝错误令牌', (await agentCall('/v1/health', undefined, 'bad')).status === 401);
+    const guide = await agentCall('/v1/tools/agent_guide', {});
+    check('外部 Agent：agent_guide 返回操作手册', typeof guide.json.result === 'string' && guide.json.result.includes('行为守则'));
     const summary = await agentCall('/v1/tools/changes_summary', { folder: repo });
     const summaryFiles = (summary.json.result?.files || []).map((f) => path.basename(f.path));
     check('外部 Agent：changes_summary 列出改动文件', EXPECTED_FILES.every((f) => summaryFiles.includes(f)), `实际：${summaryFiles.join(',')}`);

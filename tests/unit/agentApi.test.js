@@ -315,3 +315,41 @@ test('启停串行：listen 期间关闭接口，最终不在监听且配置无�
   assert.equal(stored.url, null);
   assert.equal(stored.pid, null);
 });
+
+test('操作手册：agent_guide 返回正文与覆盖全部工具的实时索引，HTTP /v1/guide 需令牌', async () => {
+  const d = dispatcher();
+  const guide = await d.callTool('agent_guide', {});
+  assert.equal(typeof guide, 'string');
+  assert.match(guide, /## A8\. 行为守则/);
+  for (const tool of TOOLS) assert.ok(guide.includes(`| \`${tool.name}\``), `索引缺少 ${tool.name}`);
+  assert.equal(d.calls.length, 0);
+  const token = newToken();
+  const server = createAgentServer({ getToken: () => token, listTools, health: () => ({}), callTool: async () => null });
+  const port = await server.listen(0);
+  try {
+    assert.equal((await send({ port, path: '/v1/guide' })).status, 401);
+    const text = await new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port, path: '/v1/guide', headers: { Authorization: `Bearer ${token}` } }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => resolve(`${res.headers['content-type']}\n${body}`));
+      }).on('error', reject);
+    });
+    assert.match(String(text), /^text\/markdown/);
+    assert.match(String(text), /# ReviewFlow AI Agent 操作手册/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('MCP 桥：握手说明要求先读手册；应用未运行时 agent_guide 也直接返回原始 Markdown', async () => {
+  const dir = fs.mkdtempSync(path.join(root, 'guide-'));
+  const replies = await runBridge(dir, [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'agent_guide', arguments: {} } },
+  ], 2);
+  const byId = Object.fromEntries(replies.map((r) => [r.id, r]));
+  assert.match(byId[1].result.instructions, /agent_guide/);
+  assert.notEqual(byId[2].result.isError, true);
+  assert.match(byId[2].result.content[0].text, /^# ReviewFlow AI Agent 操作手册/);
+});

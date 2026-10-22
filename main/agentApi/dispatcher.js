@@ -1,6 +1,7 @@
 // 外部 Agent 调用分发：参数映射、长任务登记与等待、改动后通知界面刷新
 const { randomUUID } = require('crypto');
 const { TOOL_MAP } = require('./catalog');
+const { readGuide } = require('./guide');
 
 const DEFAULT_WAIT_SEC = 50;
 const MAX_WAIT_SEC = 600;
@@ -81,6 +82,7 @@ function createDispatcher({ invoke, composites, notify }) {
   }
 
   const builtins = {
+    agent_guide: () => readGuide(),
     /** @param {Record<string, any>} input */
     agent_waitJob: (input) => {
       const job = jobs.get(String(input.jobId || ''));
