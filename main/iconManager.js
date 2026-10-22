@@ -22,6 +22,17 @@ function bundleIcnsPath() {
   return path.join(path.dirname(path.dirname(app.getPath('exe'))), 'Resources', 'icon.icns');
 }
 
+function defaultBackupPath() {
+  const { app } = require('electron');
+  return path.join(app.getPath('userData'), 'default-icon.icns');
+}
+
+async function refreshSignedBundle(bundleIcns) {
+  const appBundleDir = path.resolve(bundleIcns, '..', '..', '..');
+  await exec('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', appBundleDir]);
+  await exec('/usr/bin/touch', [appBundleDir]).catch(() => {});
+}
+
 // 启动时恢复自定义图标（Dock）
 function applyOnStartup() {
   const { app } = require('electron');
@@ -83,13 +94,11 @@ async function applyCustomIcon(imagePath) {
   let bundleUpdated = false;
   const bundleIcns = bundleIcnsPath();
   if (bundleIcns) {
-    const defaultBackup = bundleIcns + '.default';
+    const defaultBackup = defaultBackupPath();
     try {
       if (!fs.existsSync(defaultBackup)) fs.copyFileSync(bundleIcns, defaultBackup);
       fs.copyFileSync(icns, bundleIcns);
-      // 刷新 Finder 图标缓存
-      const appDir = path.dirname(path.dirname(bundleIcns));
-      await exec('/usr/bin/touch', [appDir]).catch(() => {});
+      await refreshSignedBundle(bundleIcns);
       bundleUpdated = true;
     } catch { /* 无写入权限时仅 Dock 生效 */ }
   }
@@ -101,12 +110,13 @@ async function resetIcon() {
   const { app } = require('electron');
   fs.rmSync(customIconPath(), { force: true });
   const bundleIcns = bundleIcnsPath();
-  const defaultBackup = bundleIcns ? bundleIcns + '.default' : null;
-  if (bundleIcns && defaultBackup && fs.existsSync(defaultBackup)) {
+  const defaultBackup = [defaultBackupPath(), bundleIcns ? bundleIcns + '.default' : null]
+    .find((candidate) => candidate && fs.existsSync(candidate));
+  if (bundleIcns && defaultBackup) {
     try {
       fs.copyFileSync(defaultBackup, bundleIcns);
       fs.rmSync(defaultBackup, { force: true });
-      await exec('/usr/bin/touch', [path.dirname(path.dirname(bundleIcns))]).catch(() => {});
+      await refreshSignedBundle(bundleIcns);
     } catch { /* 无写入权限 */ }
   }
   if (app.dock) {
